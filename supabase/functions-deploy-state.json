@@ -1,0 +1,13 @@
+{
+  "projectId": "72842094",
+  "functions": {
+    "llm-proxy": {
+      "hasChanged": false,
+      "hash": "f225ccf41f96ee62373f97d64ddf9db255a3f76315001bbee71de63261ec2a63"
+    },
+    "web-search": {
+      "hasChanged": false,
+      "hash": "0d47c22b07063cc96a7a88637c32d2b31d53110cee8e95d26c7ce4f2601d55cc"
+    }
+  }
+}

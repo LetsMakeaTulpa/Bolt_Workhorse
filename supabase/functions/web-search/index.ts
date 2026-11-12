@@ -6,9 +6,19 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const FEATHERLESS_API_KEY = Deno.env.get("FEATHERLESS_API_KEY") ?? "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const FEATHERLESS_BASE = "https://api.featherless.ai/v1";
-const QUERY_COMPILER_MODEL = Deno.env.get("FEATHERLESS_MODEL") ?? "Qwen/Qwen2.5-7B-Instruct";
+
+async function getApiKey(): Promise<string> {
+  const client = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const { data } = await client
+    .from("app_config")
+    .select("featherless_api_key")
+    .eq("id", 1)
+    .maybeSingle();
+  return data?.featherless_api_key ?? "";
+}
 
 interface SearchResult {
   title: string;
@@ -190,6 +200,7 @@ async function compileQueries(
   question: string,
   preset: string,
   useDorks: boolean,
+  apiKey: string,
 ): Promise<string[]> {
   const systemPrompt = `You are a semantic search query compiler for a research intelligence platform. Given a research question, generate 3-5 optimized search queries tailored for different search engines. Consider:
 - Exact phrases and key terms
@@ -205,10 +216,10 @@ Return ONLY the queries, one per line. No numbering, no explanations.`;
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${FEATHERLESS_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: QUERY_COMPILER_MODEL,
+        model: "Qwen/Qwen2.5-7B-Instruct",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `Research question: "${question}"\nPreset: ${preset}\nGenerate search queries:` },
@@ -334,13 +345,19 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Fetch API key from database
+    const FEATHERLESS_API_KEY = await getApiKey();
+    if (!FEATHERLESS_API_KEY && shouldCompile) {
+      // Skip query compilation if no API key, fall back to raw query
+    }
+
     // Select engines based on preset portfolio optimization
     const engines = requestedEngines.length > 0 ? requestedEngines : selectEngines(preset, []);
 
     // Compile queries — semantic query compilation
     let queries: string[] = [query];
-    if (shouldCompile) {
-      queries = await compileQueries(query, preset, useDorks);
+    if (shouldCompile && FEATHERLESS_API_KEY) {
+      queries = await compileQueries(query, preset, useDorks, FEATHERLESS_API_KEY);
     } else if (useDorks) {
       queries = expandQuery(query);
     }

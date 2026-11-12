@@ -42,7 +42,7 @@ export function InvestigationPanel({
   );
 }
 
-function TabButton({ active, onClick, icon: Icon, label, count }: { active: boolean; onClick: () => void; icon: React.ComponentType<{ size?: number; className?: string }>; label: string; count: number }) {
+function TabButton({ active, onClick, icon: Icon, label, count }: { active: boolean; onClick: () => void; icon: React.ElementType; label: string; count: number }) {
   return (
     <button
       onClick={onClick}

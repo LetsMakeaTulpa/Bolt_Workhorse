@@ -1,6 +1,7 @@
 import { ResearchPreset } from '../types';
-import { X, Layers, Cpu, Globe, Shield } from 'lucide-react';
-import { useState } from 'react';
+import { supabase } from '../lib/supabase';
+import { X, Layers, Cpu, Globe, Shield, Key, Check, AlertCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
 
 interface SettingsModalProps {
   presets: ResearchPreset[];
@@ -20,6 +21,45 @@ const ENGINE_DESCRIPTIONS: Record<string, string> = {
 
 export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose }: SettingsModalProps) {
   const current = presets.find((p) => p.name === selectedPreset);
+  const [apiKey, setApiKey] = useState('');
+  const [keySaved, setKeySaved] = useState(false);
+  const [keyError, setKeyError] = useState('');
+  const [keyConfigured, setKeyConfigured] = useState(false);
+
+  useEffect(() => {
+    supabase.from('app_config').select('featherless_api_key').eq('id', 1).maybeSingle()
+      .then(({ data }) => {
+        if (data?.featherless_api_key) {
+          setKeyConfigured(true);
+          setApiKey(data.featherless_api_key);
+        }
+      });
+  }, []);
+
+  const handleSaveKey = async () => {
+    setKeyError('');
+    if (!apiKey.trim()) {
+      setKeyError('API key cannot be empty');
+      return;
+    }
+    const { error } = await supabase
+      .from('app_config')
+      .upsert({ id: 1, featherless_api_key: apiKey.trim() });
+
+    if (error) {
+      // Row might not exist yet — try insert
+      const { error: insertError } = await supabase
+        .from('app_config')
+        .insert({ id: 1, featherless_api_key: apiKey.trim() });
+      if (insertError) {
+        setKeyError(insertError.message);
+        return;
+      }
+    }
+    setKeySaved(true);
+    setKeyConfigured(true);
+    setTimeout(() => setKeySaved(false), 2000);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
@@ -35,6 +75,47 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
         </div>
 
         <div className="space-y-5 p-4 max-h-[70vh] overflow-y-auto">
+          {/* API Key Section */}
+          <div>
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Featherless API Key
+            </label>
+            <div className="rounded-lg border border-border-subtle bg-bg-elevated p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Key size={14} className={keyConfigured ? 'text-olive' : 'text-warning'} />
+                <span className="text-xs font-medium text-text-primary">
+                  {keyConfigured ? 'API key configured' : 'API key required'}
+                </span>
+              </div>
+              <p className="text-[11px] text-text-muted mb-2.5">
+                Enter your Featherless.ai API key to power AI chat and search. Get a key from the Featherless dashboard. The key is stored securely in the database and used server-side only.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => { setApiKey(e.target.value); setKeySaved(false); }}
+                  placeholder="rc_..."
+                  className="flex-1 rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent/40 font-mono"
+                />
+                <button
+                  onClick={handleSaveKey}
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                    keySaved ? 'bg-olive text-bg-base' : 'bg-accent text-bg-base hover:bg-accent-hover'
+                  }`}
+                >
+                  {keySaved ? <><Check size={13} /> Saved</> : 'Save Key'}
+                </button>
+              </div>
+              {keyError && (
+                <div className="mt-2 flex items-center gap-1.5 text-[11px] text-error">
+                  <AlertCircle size={12} />
+                  <span>{keyError}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Active Preset */}
           <div>
             <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">Active Preset</label>
@@ -111,7 +192,7 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
               <Cpu size={14} className="text-accent" />
               <span className="text-xs font-medium text-text-primary">Inference Provider</span>
             </div>
-            <p className="text-[11px] text-text-muted">Featherless.ai — OpenAI-compatible API with 24,000+ models. Model selection available in the top bar.</p>
+            <p className="text-[11px] text-text-muted">Featherless.ai — OpenAI-compatible API with 24,000+ models. Select any model from the top bar dropdown.</p>
           </div>
         </div>
 

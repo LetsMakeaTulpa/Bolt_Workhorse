@@ -420,6 +420,7 @@ export default function App() {
             <ChatArea
               messages={messages}
               isStreaming={isStreaming}
+              streamingContent={streamingContent}
               onSendMessage={handleSendMessage}
               searchEnabled={searchEnabled}
               isSearching={isSearching}

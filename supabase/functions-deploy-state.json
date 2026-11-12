@@ -3,11 +3,11 @@
   "functions": {
     "llm-proxy": {
       "hasChanged": false,
-      "hash": "f225ccf41f96ee62373f97d64ddf9db255a3f76315001bbee71de63261ec2a63"
+      "hash": "74836c4c948c36c77bdcc7e8bf1c34143e54f0dc12c16b0102b4ab470e931ea1"
     },
     "web-search": {
       "hasChanged": false,
-      "hash": "0d47c22b07063cc96a7a88637c32d2b31d53110cee8e95d26c7ce4f2601d55cc"
+      "hash": "d97128cf2d792d706f37b6be387bc53813812d70c74df308384e66a18421b743"
     }
   }
 }

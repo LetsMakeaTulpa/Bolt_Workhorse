@@ -6,9 +6,23 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const FEATHERLESS_API_KEY = Deno.env.get("FEATHERLESS_API_KEY") ?? "";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const FEATHERLESS_BASE = "https://api.featherless.ai/v1";
-const DEFAULT_MODEL = Deno.env.get("FEATHERLESS_MODEL") ?? "Qwen/Qwen2.5-7B-Instruct";
+
+async function getApiKey(): Promise<{ key: string; model: string }> {
+  const client = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const { data, error } = await client
+    .from("app_config")
+    .select("featherless_api_key, default_model")
+    .eq("id", 1)
+    .maybeSingle();
+
+  if (error || !data) {
+    return { key: "", model: "Qwen/Qwen2.5-7B-Instruct" };
+  }
+  return { key: data.featherless_api_key ?? "", model: data.default_model ?? "Qwen/Qwen2.5-7B-Instruct" };
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -17,6 +31,14 @@ Deno.serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
+    const { key: FEATHERLESS_API_KEY, model: DEFAULT_MODEL } = await getApiKey();
+
+    if (!FEATHERLESS_API_KEY) {
+      return new Response(
+        JSON.stringify({ error: "Featherless API key not configured. Set it in Settings." }),
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     // GET /llm-proxy/models — list available models
     if (url.pathname.endsWith("/models")) {

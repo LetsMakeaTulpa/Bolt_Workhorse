@@ -1,12 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useSearch } from './hooks/useSearch';
 import { supabase } from './lib/supabase';
-import { fetchModels, chatCompletion, fallbackChain, webSearch } from './lib/api';
-import { CLIENT_ENGINE_IDS, searchClientEngines } from './lib/clientEngines';
-import { fuseResults } from './lib/fusion';
-import {
-  DEFAULT_ENGINES, DORK_ENGINES, mergeEngineIssues, summarizeEngineStatus, type EngineIssue,
-} from './lib/engines';
-import { expandLane } from './lib/dorks';
+import { fetchModels, chatCompletion, fallbackChain } from './lib/api';
+import { DEFAULT_ENGINES } from './lib/engines';
 import type {
   Conversation, Message, Source, ModelInfo, Finding,
   ResearchPreset, ActivityLog, SourceRecord,
@@ -32,17 +28,10 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [searchEnabled, setSearchEnabled] = useState(true);
   const [engines, setEngines] = useState<string[]>(DEFAULT_ENGINES);
-  /** the query behind the current result set, so the panel can explain the ranking */
-  const [lastSearchQuery, setLastSearchQuery] = useState('');
-  /** the in-flight search; a newer run aborts it so stale results cannot land on top */
-  const searchRunRef = useRef<AbortController | null>(null);
+  /** the in-flight completion; stopping or replacing a run must stop the model too */
+  const streamRunRef = useRef<AbortController | null>(null);
   const [useDorks, setUseDorks] = useState(false);
-  const [searchResults, setSearchResults] = useState<Source[]>([]);
-  const [searchStatus, setSearchStatus] = useState('');
-  // engines that could not answer (missing key, rejected key, unrecognised name) for the strip
-  const [engineIssues, setEngineIssues] = useState<EngineIssue[]>([]);
   const [rawSearchOnly, setRawSearchOnly] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [showSearchPanel, setShowSearchPanel] = useState(true);
   const [panelTab, setPanelTab] = useState<PanelTab>('map');
@@ -78,7 +67,7 @@ export default function App() {
       setFindings([]);
       setSources([]);
       setActivityLogs([]);
-      setSearchResults([]);
+      clearSearchResults();
       return;
     }
     loadConversations();
@@ -107,7 +96,7 @@ export default function App() {
       if (currentConversation.preset) setSelectedPreset(currentConversation.preset);
     } else {
       setMessages([]);
-      setSearchResults([]);
+      clearSearchResults();
       setActivityLogs([]);
       setSources([]);
     }
@@ -116,11 +105,6 @@ export default function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
-
-  // a stale "exa: missing key" must not survive the user enabling a different engine set
-  useEffect(() => {
-    setEngineIssues([]);
-  }, [engines.join(',')]);
 
   const loadConversations = async () => {
     const { data } = await supabase.from('conversations').select('*').order('updated_at', { ascending: false });
@@ -188,7 +172,7 @@ export default function App() {
   const handleNewChat = () => {
     setCurrentConversation(null);
     setMessages([]);
-    setSearchResults([]);
+    clearSearchResults();
     setStreamingContent('');
     setActivityLogs([]);
     setSources([]);
@@ -202,298 +186,69 @@ export default function App() {
     if (currentConversation?.id === id) handleNewChat();
   };
 
-  const performSearch = async (query: string, convId: string): Promise<Source[]> => {
-    // a new search owns the result list: cancel the previous run so a slow engine cannot
-    // overwrite fresher results when it finally answers
-    searchRunRef.current?.abort();
-    const controller = new AbortController();
-    searchRunRef.current = controller;
-    const isCurrent = () => searchRunRef.current === controller;
-
-    setIsSearching(true);
-    setLastSearchQuery(query);
-    setEngineIssues([]);
-    const preset = presets.find((p) => p.name === selectedPreset);
-    const enginesToUse = engines.length > 0 ? engines : (preset?.config.engines ?? ['duckduckgo', 'wikipedia', 'arxiv', 'github']);
-    const maxResults = preset?.config.max_results ?? 5;
-
-    await logActivity(convId, 'plan', `Compiling search strategy for: "${query}"`, { preset: selectedPreset, engines: enginesToUse });
-    const searchLog = await logActivity(
-      convId,
-      'search',
-      `Searching across ${enginesToUse.length} engines`,
-      { engines: enginesToUse, useDorks },
-      'running',
+  const closeActivity = (row: ActivityLog, description: string) => {
+    setActivityLogs((prev) =>
+      prev.map((entry) => (entry.id === row.id ? { ...entry, status: 'completed', description } : entry)),
     );
-
-    try {
-      const serverEngines = enginesToUse.filter((engine) => !CLIENT_ENGINE_IDS.has(engine));
-      const browserEngines = enginesToUse.filter((engine) => CLIENT_ENGINE_IDS.has(engine));
-
-      // clear the map for this run, then let engines stream their nodes in as they answer
-      setSearchResults([]);
-      const [serverResponse, browserResults] = await Promise.all([
-        serverEngines.length > 0
-          ? webSearch(query, serverEngines, maxResults, useDorks, selectedPreset, true, controller.signal).then((response) => {
-              if (!isCurrent()) return response;
-              if (response?.results?.length) {
-                setSearchResults((previous) => [...previous, ...response.results]);
-              }
-              setEngineIssues(summarizeEngineStatus(response?.engine_status));
-              return response;
-            })
-          : null,
-        searchClientEngines(
-          query,
-          browserEngines,
-          maxResults,
-          (_engine, items) => {
-            if (isCurrent()) setSearchResults((previous) => [...previous, ...items]);
-          },
-          controller.signal,
-        ),
-      ]);
-
-      // a superseded run must not touch the list, the map or the database
-      if (!isCurrent()) return [];
-
-      // group every engine's ranking separately, then fuse across them
-      const perEngine: Record<string, Source[]> = {};
-      for (const item of [...(serverResponse?.results ?? []), ...browserResults]) {
-        const engine = item.source_engine || 'unknown';
-        (perEngine[engine] ??= []).push(item);
-      }
-      const fused = fuseResults(query, perEngine, { limit: 40 });
-      if (!isCurrent()) return [];
-
-      const result = {
-        query,
-        queries_used: serverResponse?.queries_used ?? [query],
-        total_results: fused.length,
-        engines_used: [...(serverResponse?.engines_used ?? []), ...browserEngines],
-        preset: selectedPreset,
-        results: fused,
-      };
-      setSearchResults(result.results);
-
-      await logActivity(convId, 'rank', `Reciprocal Rank Fusion applied to ${result.total_results} results`, {
-        engines_used: result.engines_used,
-        queries_used: result.queries_used,
-      });
-      await logActivity(convId, 'deduplicate', `Deduplicated and scored ${result.results.length} unique sources`);
-
-      // Save sources to DB
-      if (result.results.length > 0) {
-        const sourcesToInsert = result.results.map((r, i) => ({
-          conversation_id: convId,
-          title: r.title,
-          url: r.url,
-          snippet: r.snippet,
-          provider: r.source_engine,
-          original_query: query,
-          publication_date: r.published ?? '',
-          relevance_score: r.relevance_score ?? 0,
-          citation_id: r.citation_id ?? `[${i + 1}]`,
-          source_type: r.source_engine === 'arxiv' || r.source_engine === 'openalex' ? 'academic' : 'web',
-        }));
-        const { data: savedSources } = await supabase.from('sources').insert(sourcesToInsert).select();
-        if (savedSources) setSources((prev) => [...(savedSources as SourceRecord[]), ...prev].slice(0, 50));
-      }
-
-      // Update the search activity to completed
-      setActivityLogs((prev) => prev.map((a) =>
-        a.activity_type === 'search' && a.status === 'running'
-          ? { ...a, status: 'completed' }
-          : a
-      ));
-
-      return result.results;
-    } catch (err) {
-      // an aborted run is not a failure: the search that replaced it owns the status line
-      if (controller.signal.aborted || !isCurrent()) {
-        // ...but the row belongs to this run, so a user cancel has to close it itself
-        if (controller.signal.aborted && isCurrent() && searchLog?.id) {
-          const description = 'Search cancelled';
-          setActivityLogs((prev) =>
-            prev.map((entry) => (entry.id === searchLog.id ? { ...entry, status: 'completed', description } : entry)),
-          );
-          void supabase.from('activity_logs').update({ status: 'completed', description }).eq('id', searchLog.id);
-        }
-        return [];
-      }
-      console.error('Search error:', err);
-      setSearchResults([]);
-      await logActivity(convId, 'search', `Search failed: ${err instanceof Error ? err.message : 'unknown'}`, {}, 'failed');
-      return [];
-    } finally {
-      if (isCurrent()) {
-        setIsSearching(false);
-      } else if (searchLog?.id) {
-        // the newer run has its own activity row; this one must not spin forever
-        const description = 'Search superseded by a newer run';
-        setActivityLogs((prev) =>
-          prev.map((entry) => (entry.id === searchLog.id ? { ...entry, status: 'completed', description } : entry)),
-        );
-        void supabase.from('activity_logs').update({ status: 'completed', description }).eq('id', searchLog.id);
-      }
-    }
+    void supabase.from('activity_logs').update({ status: 'completed', description }).eq('id', row.id);
   };
 
-  /**
-   * Stop the run in flight without starting another one. The results already streamed in stay on
-   * screen: the abort only stops engines that have not answered yet.
-   */
+  /** the conversation a search writes into, created (and titled) on demand */
+  const ensureSearchConversation = async (title?: string): Promise<string> => {
+    if (currentConversation?.id) return currentConversation.id;
+    const conv = await createConversation();
+    setCurrentConversation(conv);
+    if (title) await supabase.from('conversations').update({ title }).eq('id', conv.id);
+    return conv.id;
+  };
+
+  const saveSearchSources = async (conversationId: string, results: Source[], originalQuery: string) => {
+    const rows = results.map((r, i) => ({
+      conversation_id: conversationId,
+      title: r.title,
+      url: r.url,
+      snippet: r.snippet,
+      provider: r.source_engine,
+      original_query: originalQuery,
+      publication_date: r.published ?? '',
+      relevance_score: r.relevance_score ?? 0,
+      citation_id: r.citation_id ?? `[${i + 1}]`,
+      source_type: r.source_engine === 'arxiv' || r.source_engine === 'openalex' ? 'academic' : 'web',
+    }));
+    const { data } = await supabase.from('sources').insert(rows).select();
+    if (data) setSources((previous) => [...(data as SourceRecord[]), ...previous].slice(0, 50));
+  };
+
+  const abortStream = useCallback(() => streamRunRef.current?.abort(), []);
+
+  const {
+    results: searchResults,
+    isSearching,
+    status: searchStatus,
+    issues: engineIssues,
+    lastQuery: lastSearchQuery,
+    performSearch,
+    cancelSearch: cancelSearchRun,
+    runLane: handleRunLane,
+    runAborted,
+    clearResults: clearSearchResults,
+  } = useSearch({
+    engines,
+    useDorks,
+    presets,
+    selectedPreset,
+    isStreaming,
+    logActivity,
+    ensureConversation: ensureSearchConversation,
+    saveSources: saveSearchSources,
+    abortStream,
+    closeActivity,
+  });
+
+  /** stop a search or a completion, whichever is running */
   const cancelSearch = () => {
-    const running = searchRunRef.current;
-    if (!running || running.signal.aborted) return;
-    running.abort();
-    setSearchStatus('Search cancelled');
-    setIsSearching(false);
-  };
-
-  /**
-   * Batch a whole dork lane: every template in the lane becomes its own query against the
-   * selected engines, and the union is ranked once through the fusion layer. Queries are
-   * kept as separate ranking lists (`engine·q3`) so a page matched by several dork patterns
-   * outranks one that a single pattern happened to surface.
-   */
-  const handleRunLane = async (lane: string, target: string) => {
-    const cleanTarget = target.trim();
-    if (!cleanTarget || isSearching || isStreaming) return;
-    const queries = expandLane(lane, cleanTarget, 10);
-    if (queries.length === 0) return;
-
-    // a lane run is a search too: cancelling the previous run keeps a slow lane from landing on
-    // top of whatever the user asked for next
-    searchRunRef.current?.abort();
-    const controller = new AbortController();
-    searchRunRef.current = controller;
-    const isLaneCurrent = () => searchRunRef.current === controller;
-
-    let conversationId = currentConversation?.id ?? '';
-    if (!conversationId) {
-      const conv = await createConversation();
-      setCurrentConversation(conv);
-      conversationId = conv.id;
-      await supabase.from('conversations').update({ title: `${lane}: ${cleanTarget}` }).eq('id', conversationId);
-    }
-
-    const preset = presets.find((p) => p.name === selectedPreset);
-    const enginesToUse = engines.length > 0 ? engines : (preset?.config.engines ?? ['duckduckgo', 'wikipedia', 'arxiv', 'github']);
-    const maxResults = Math.max(3, preset?.config.max_results ?? 5);
-    // Dork lanes only make sense on engines that parse operators; the rest would fill the
-    // results with plain-text matches and bury the actual dork hits.
-    const dorkCapable = enginesToUse.filter((engine) => DORK_ENGINES.has(engine));
-    const laneEngines = dorkCapable.length > 0 ? dorkCapable : enginesToUse;
-    const serverEngines = laneEngines.filter((engine) => !CLIENT_ENGINE_IDS.has(engine));
-    const browserEngines = laneEngines.filter((engine) => CLIENT_ENGINE_IDS.has(engine));
-
-    setIsSearching(true);
-    setSearchResults([]);
-    setEngineIssues([]);
-    setSearchStatus(`Lane "${lane}" — starting ${queries.length} queries`);
-    await logActivity(
-      conversationId,
-      'plan',
-      `Batch lane "${lane}": ${queries.length} dork queries against ${cleanTarget}`,
-      { lane, queries, engines: laneEngines },
-      'running',
-    );
-    if (dorkCapable.length === 0) {
-      await logActivity(
-        conversationId,
-        'search',
-        'None of the selected engines parse dork operators — results will mostly be plain-text matches. DuckDuckGo, Brave, Google, Exa, SearXNG and Tavily do.',
-        { engines: laneEngines },
-        'completed',
-      );
-    }
-
-    const perEngineQuery: Record<string, Source[]> = {};
-    let finished = 0;
-
-    const runQuery = async (query: string, index: number) => {
-      if (controller.signal.aborted) return;
-      try {
-        const [server, browser] = await Promise.all([
-          serverEngines.length > 0
-            ? webSearch(query, serverEngines, maxResults, true, selectedPreset, false, controller.signal)
-            : null,
-          searchClientEngines(query, browserEngines, maxResults, (_engine, items) => {
-            if (isLaneCurrent()) setSearchResults((previous) => [...previous, ...items]);
-          }, controller.signal),
-        ]);
-        if (controller.signal.aborted) return;
-        const serverItems = server?.results ?? [];
-        if (serverItems.length) setSearchResults((previous) => [...previous, ...serverItems]);
-        if (server?.engine_status) {
-          setEngineIssues((previous) => mergeEngineIssues(previous, summarizeEngineStatus(server.engine_status)));
-        }
-        // silent-empty patterns are the useful signal in a lane run
-        if (serverItems.length + browser.length === 0) {
-          await logActivity(conversationId, 'search', `No results for dork: ${query}`, { query }, 'completed');
-        }
-        for (const item of [...serverItems, ...browser]) {
-          const key = `${item.source_engine || 'unknown'}·q${index}`;
-          (perEngineQuery[key] ??= []).push(item);
-        }
-      } catch (err) {
-        await logActivity(conversationId, 'search', `Dork query failed: ${query}`, {}, 'failed');
-      } finally {
-        finished += 1;
-        setSearchStatus(`Lane "${lane}" — ${finished}/${queries.length} queries`);
-      }
-    };
-
-    try {
-      // two queries in flight at a time keeps provider rate limits happy
-      const queue = queries.map((query, index) => ({ query, index }));
-      const worker = async () => {
-        for (;;) {
-          if (controller.signal.aborted) return;
-          const next = queue.shift();
-          if (!next) return;
-          await runQuery(next.query, next.index);
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(2, queries.length) }, worker));
-
-      const fused = fuseResults(cleanTarget, perEngineQuery, { limit: 60 });
-      if (!isLaneCurrent()) return;
-      setSearchResults(fused);
-      await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { lane, queries }, 'completed');
-      if (fused.length === 0) {
-        await logActivity(
-          conversationId,
-          'search',
-          `Lane "${lane}" returned no sources. The engines that honour dorks may be rate-limited or unconfigured (Exa, SearXNG, Google and Tavily need secrets on the search function).`,
-          { lane, engines: laneEngines },
-          'failed',
-        );
-      }
-
-      if (fused.length > 0) {
-        const rows = fused.map((r, i) => ({
-          conversation_id: conversationId,
-          title: r.title,
-          url: r.url,
-          snippet: r.snippet,
-          provider: r.source_engine,
-          original_query: `${lane}: ${cleanTarget}`,
-          publication_date: r.published ?? '',
-          relevance_score: r.relevance_score ?? 0,
-          citation_id: r.citation_id ?? `[${i + 1}]`,
-          source_type: r.source_engine === 'arxiv' || r.source_engine === 'openalex' ? 'academic' : 'web',
-        }));
-        const { data: saved } = await supabase.from('sources').insert(rows).select();
-        if (saved) setSources((previous) => [...(saved as SourceRecord[]), ...previous].slice(0, 50));
-      }
-    } finally {
-      if (isLaneCurrent()) {
-        setIsSearching(false);
-        setSearchStatus('');
-      }
-    }
+    cancelSearchRun();
+    abortStream();
   };
 
   const handleSendMessage = async (content: string, options?: { forceSearch?: boolean }) => {
@@ -531,7 +286,7 @@ export default function App() {
     if (shouldSearch) {
       searchResultsData = await performSearch(content, conv.id);
       // a newer search replaced this one, so this turn has nothing to answer with
-      if (searchRunRef.current?.signal.aborted) return;
+      if (runAborted()) return;
     }
 
     // Build LLM messages
@@ -587,11 +342,16 @@ Each question must be answerable by a search. Nothing may follow that section. K
     };
     setMessages((prev) => [...prev, assistantMsg]);
 
-    await logActivity(conv.id, 'synthesize', 'Synthesizing response from gathered sources', { model: selectedModel }, 'running');
+    const synthLog = await logActivity(conv.id, 'synthesize', 'Synthesizing response from gathered sources', { model: selectedModel }, 'running');
 
     // the model that actually answers, which may not be the one that was selected
     let effectiveModel = selectedModel;
     const chain = fallbackChain(selectedModel, models);
+
+    // cancelled by the stop control, or superseded by whatever runs next
+    streamRunRef.current?.abort();
+    const streamController = new AbortController();
+    streamRunRef.current = streamController;
 
     await chatCompletion(selectedModel, llmMessages, {
       onModelSwitch: (from, to, reason) => {
@@ -640,7 +400,27 @@ Each question must be answerable by a search. Nothing may follow that section. K
             : a
         ));
       },
-    }, undefined, chain);
+      // the stream was stopped on purpose: keep the partial answer visible, mark it as cut off,
+      // and do not persist it — a half-sentence is not a source anyone should cite later
+      onAbort: (partial) => {
+        setIsStreaming(false);
+        setStreamingContent('');
+        // the abort path may hand back less than onToken already delivered, so trust the longer one
+        const kept = (partial.length > fullContent.length ? partial : fullContent).trim();
+        const stopped = kept ? `${kept}\n\n_(stopped)_` : '_(stopped)_';
+        setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, content: stopped } : m)));
+        setActivityLogs((prev) => prev.map((a) =>
+          a.id === synthLog?.id
+            ? { ...a, status: 'completed', description: 'Synthesis stopped' }
+            : a
+        ));
+        if (synthLog?.id) {
+          void supabase.from('activity_logs')
+            .update({ status: 'completed', description: 'Synthesis stopped' })
+            .eq('id', synthLog.id);
+        }
+      },
+    }, undefined, chain, streamController.signal);
   };
 
   const handleUpdateFindingStatus = async (id: string, status: 'saved' | 'shared' | 'discarded') => {

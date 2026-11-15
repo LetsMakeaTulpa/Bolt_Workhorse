@@ -99,7 +99,7 @@ export function ChatArea({
             useDorks={useDorks}
             onUseDorksChange={onUseDorksChange}
             disabled={isStreaming}
-            searching={isSearching}
+            searching={isSearching || isStreaming}
             onCancel={onCancelSearch}
           />
           {engineIssues && engineIssues.length > 0 && (

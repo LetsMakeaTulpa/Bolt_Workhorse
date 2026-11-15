@@ -120,7 +120,9 @@ refusing *before* spending provider credit.
 `npm run smoke` builds and runs every experiment test. Notable suites:
 `fusion-intent` (intent weights, recency, ordering), `rank-badges` (what the UI claims the ranking
 did), `ranking-harness` (`node experiments/ranking-harness.mjs` — fixed query set with graded
-judgements, before/after nDCG/MRR; `--check` fails on regression), `web-engine-pipeline` (handler
+judgements, before/after nDCG/MRR; `--check` fails on regression). The query set is *contested*:
+queries pair results with near-identical term coverage so only engine trust or a date can separate
+them. An uncontested set scores the same under any weighting and silently measures nothing., `web-engine-pipeline` (handler
 statuses end to end), `provider-keys`, `followups`, plus PGlite suites for RLS and rate limits.
 
 `scripts/verify-engines.mjs` probes the deployed function. `scripts/dev-preview.sh` restarts the

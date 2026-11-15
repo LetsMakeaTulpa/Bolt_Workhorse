@@ -10,6 +10,11 @@
 //
 // The fixture is deliberately offline: judgments come with the query set, so a weight change can
 // be scored in a second, on every commit, with no API keys and no network.
+//
+// The query set is contested on purpose. A set where every engine's top hit is on-topic scores
+// identically under any weighting, which looks like "no regression" but measures nothing: each
+// contested query pairs two results with near-identical term coverage so only engine trust or a
+// publication date can separate them.
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -158,6 +163,10 @@ console.log(`  MRR       ${fmt(overallBefore.mrr)} → ${fmt(overallAfter.mrr)}`
 console.log(`  P@5       ${fmt(overallBefore.p5)} → ${fmt(overallAfter.p5)}`);
 console.log(`  recall@10 ${fmt(overallBefore.recall)} → ${fmt(overallAfter.recall)}`);
 console.log(`  improved on ${improved}/${rows.length} queries, regressed on ${regressed}`);
+if (improved === 0) {
+  console.log('\n  ! no query moved. Either the weighting changed nothing, or the query set has lost its');
+  console.log('    contested pairs and now scores the same however results are ranked.');
+}
 
 if (has('json')) {
   console.log('\n' + JSON.stringify({

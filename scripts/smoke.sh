@@ -116,6 +116,13 @@ search_abort() {
 # 4g. a superseded search stops its requests instead of finishing and overwriting
 run "search abort" search_abort
 
+ranking_benchmark() {
+  node experiments/ranking-harness.mjs --check
+}
+
+# 4h. contested query set: intent weighting must not rank worse than flat trust
+run "ranking benchmark" ranking_benchmark
+
 # 5. database tests need PGlite, which is test-only and not in package.json
 if [ ! -d node_modules/@electric-sql/pglite ]; then
   printf '→ installing @electric-sql/pglite (test-only, not saved)\n'

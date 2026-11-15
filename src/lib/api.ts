@@ -422,10 +422,13 @@ export async function webSearch(
   useDorks: boolean,
   preset: string,
   compileQueries = true,
+  /** lets the caller cancel a run that a newer search has superseded */
+  signal?: AbortSignal,
 ): Promise<SearchResponse> {
   const resp = await fetch(`${SUPABASE_URL}/functions/v1/web-search`, {
     method: 'POST',
     headers,
+    signal,
     body: JSON.stringify({
       query,
       engines,

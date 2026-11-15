@@ -95,7 +95,8 @@ export function ChatArea({
             onEnginesChange={onEnginesChange}
             useDorks={useDorks}
             onUseDorksChange={onUseDorksChange}
-            disabled={isStreaming || isSearching}
+            disabled={isStreaming}
+            searching={isSearching}
           />
           {engineIssues && engineIssues.length > 0 && (
             <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">

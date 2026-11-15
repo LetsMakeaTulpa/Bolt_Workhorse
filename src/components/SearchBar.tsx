@@ -21,7 +21,10 @@ interface SearchBarProps {
   onUseDorksChange: (value: boolean) => void;
   rawOnly?: boolean;
   onRawOnlyChange?: (value: boolean) => void;
+  /** true while the model streams: the composer cannot take a new question then */
   disabled: boolean;
+  /** a search is running; the box stays usable so a new query can replace it */
+  searching?: boolean;
 }
 
 export function SearchBar({
@@ -34,6 +37,7 @@ export function SearchBar({
   rawOnly,
   onRawOnlyChange,
   disabled,
+  searching = false,
 }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -131,9 +135,10 @@ export function SearchBar({
         <button
           onClick={submit}
           disabled={disabled || !query.trim()}
+          title={searching ? 'Replace the running search' : undefined}
           className="flex flex-shrink-0 items-center gap-1.5 rounded-xl bg-olive px-3.5 py-2 text-xs font-semibold text-bg-deep transition-colors hover:bg-olive-hover disabled:cursor-not-allowed disabled:opacity-30"
         >
-          {disabled ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+          {disabled || searching ? <Loader2 size={13} className={searching ? 'animate-spin' : ''} /> : <Search size={13} />}
           <span>{rawOnly ? 'Collect' : 'Search'}</span>
         </button>
       </div>

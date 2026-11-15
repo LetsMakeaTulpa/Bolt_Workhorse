@@ -34,6 +34,8 @@ export default function App() {
   const [engines, setEngines] = useState<string[]>(DEFAULT_ENGINES);
   /** the query behind the current result set, so the panel can explain the ranking */
   const [lastSearchQuery, setLastSearchQuery] = useState('');
+  /** the in-flight search; a newer run aborts it so stale results cannot land on top */
+  const searchRunRef = useRef<AbortController | null>(null);
   const [useDorks, setUseDorks] = useState(false);
   const [searchResults, setSearchResults] = useState<Source[]>([]);
   const [searchStatus, setSearchStatus] = useState('');
@@ -168,6 +170,8 @@ export default function App() {
       .insert({ conversation_id: conversationId, activity_type: type, description, details, status })
       .select().single();
     if (data) setActivityLogs((prev) => [data as ActivityLog, ...prev].slice(0, 30));
+    // returning the row lets a caller close its own entry when the run is superseded
+    return (data as ActivityLog) ?? null;
   };
 
   const createConversation = async (): Promise<Conversation> => {
@@ -199,6 +203,13 @@ export default function App() {
   };
 
   const performSearch = async (query: string, convId: string): Promise<Source[]> => {
+    // a new search owns the result list: cancel the previous run so a slow engine cannot
+    // overwrite fresher results when it finally answers
+    searchRunRef.current?.abort();
+    const controller = new AbortController();
+    searchRunRef.current = controller;
+    const isCurrent = () => searchRunRef.current === controller;
+
     setIsSearching(true);
     setLastSearchQuery(query);
     setEngineIssues([]);
@@ -207,7 +218,13 @@ export default function App() {
     const maxResults = preset?.config.max_results ?? 5;
 
     await logActivity(convId, 'plan', `Compiling search strategy for: "${query}"`, { preset: selectedPreset, engines: enginesToUse });
-    await logActivity(convId, 'search', `Searching across ${enginesToUse.length} engines`, { engines: enginesToUse, useDorks }, 'running');
+    const searchLog = await logActivity(
+      convId,
+      'search',
+      `Searching across ${enginesToUse.length} engines`,
+      { engines: enginesToUse, useDorks },
+      'running',
+    );
 
     try {
       const serverEngines = enginesToUse.filter((engine) => !CLIENT_ENGINE_IDS.has(engine));
@@ -217,7 +234,8 @@ export default function App() {
       setSearchResults([]);
       const [serverResponse, browserResults] = await Promise.all([
         serverEngines.length > 0
-          ? webSearch(query, serverEngines, maxResults, useDorks, selectedPreset).then((response) => {
+          ? webSearch(query, serverEngines, maxResults, useDorks, selectedPreset, true, controller.signal).then((response) => {
+              if (!isCurrent()) return response;
               if (response?.results?.length) {
                 setSearchResults((previous) => [...previous, ...response.results]);
               }
@@ -225,10 +243,19 @@ export default function App() {
               return response;
             })
           : null,
-        searchClientEngines(query, browserEngines, maxResults, (_engine, items) => {
-          setSearchResults((previous) => [...previous, ...items]);
-        }),
+        searchClientEngines(
+          query,
+          browserEngines,
+          maxResults,
+          (_engine, items) => {
+            if (isCurrent()) setSearchResults((previous) => [...previous, ...items]);
+          },
+          controller.signal,
+        ),
       ]);
+
+      // a superseded run must not touch the list, the map or the database
+      if (!isCurrent()) return [];
 
       // group every engine's ranking separately, then fuse across them
       const perEngine: Record<string, Source[]> = {};
@@ -237,6 +264,7 @@ export default function App() {
         (perEngine[engine] ??= []).push(item);
       }
       const fused = fuseResults(query, perEngine, { limit: 40 });
+      if (!isCurrent()) return [];
 
       const result = {
         query,
@@ -281,12 +309,23 @@ export default function App() {
 
       return result.results;
     } catch (err) {
+      // an aborted run is not a failure: the search that replaced it owns the status line
+      if (controller.signal.aborted || !isCurrent()) return [];
       console.error('Search error:', err);
       setSearchResults([]);
       await logActivity(convId, 'search', `Search failed: ${err instanceof Error ? err.message : 'unknown'}`, {}, 'failed');
       return [];
     } finally {
-      setIsSearching(false);
+      if (isCurrent()) {
+        setIsSearching(false);
+      } else if (searchLog?.id) {
+        // the newer run has its own activity row; this one must not spin forever
+        const description = 'Search superseded by a newer run';
+        setActivityLogs((prev) =>
+          prev.map((entry) => (entry.id === searchLog.id ? { ...entry, status: 'completed', description } : entry)),
+        );
+        void supabase.from('activity_logs').update({ status: 'completed', description }).eq('id', searchLog.id);
+      }
     }
   };
 
@@ -301,6 +340,13 @@ export default function App() {
     if (!cleanTarget || isSearching || isStreaming) return;
     const queries = expandLane(lane, cleanTarget, 10);
     if (queries.length === 0) return;
+
+    // a lane run is a search too: cancelling the previous run keeps a slow lane from landing on
+    // top of whatever the user asked for next
+    searchRunRef.current?.abort();
+    const controller = new AbortController();
+    searchRunRef.current = controller;
+    const isLaneCurrent = () => searchRunRef.current === controller;
 
     let conversationId = currentConversation?.id ?? '';
     if (!conversationId) {
@@ -345,13 +391,17 @@ export default function App() {
     let finished = 0;
 
     const runQuery = async (query: string, index: number) => {
+      if (controller.signal.aborted) return;
       try {
         const [server, browser] = await Promise.all([
-          serverEngines.length > 0 ? webSearch(query, serverEngines, maxResults, true, selectedPreset, false) : null,
+          serverEngines.length > 0
+            ? webSearch(query, serverEngines, maxResults, true, selectedPreset, false, controller.signal)
+            : null,
           searchClientEngines(query, browserEngines, maxResults, (_engine, items) => {
-            setSearchResults((previous) => [...previous, ...items]);
-          }),
+            if (isLaneCurrent()) setSearchResults((previous) => [...previous, ...items]);
+          }, controller.signal),
         ]);
+        if (controller.signal.aborted) return;
         const serverItems = server?.results ?? [];
         if (serverItems.length) setSearchResults((previous) => [...previous, ...serverItems]);
         if (server?.engine_status) {
@@ -378,6 +428,7 @@ export default function App() {
       const queue = queries.map((query, index) => ({ query, index }));
       const worker = async () => {
         for (;;) {
+          if (controller.signal.aborted) return;
           const next = queue.shift();
           if (!next) return;
           await runQuery(next.query, next.index);
@@ -386,6 +437,7 @@ export default function App() {
       await Promise.all(Array.from({ length: Math.min(2, queries.length) }, worker));
 
       const fused = fuseResults(cleanTarget, perEngineQuery, { limit: 60 });
+      if (!isLaneCurrent()) return;
       setSearchResults(fused);
       await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { lane, queries }, 'completed');
       if (fused.length === 0) {
@@ -415,8 +467,10 @@ export default function App() {
         if (saved) setSources((previous) => [...(saved as SourceRecord[]), ...previous].slice(0, 50));
       }
     } finally {
-      setIsSearching(false);
-      setSearchStatus('');
+      if (isLaneCurrent()) {
+        setIsSearching(false);
+        setSearchStatus('');
+      }
     }
   };
 
@@ -454,6 +508,8 @@ export default function App() {
     let searchResultsData: Source[] = [];
     if (shouldSearch) {
       searchResultsData = await performSearch(content, conv.id);
+      // a newer search replaced this one, so this turn has nothing to answer with
+      if (searchRunRef.current?.signal.aborted) return;
     }
 
     // Build LLM messages
@@ -602,7 +658,7 @@ Each question must be answerable by a search. Nothing may follow that section. K
   /** Raw mode: gather, fuse and save sources, then stop without touching the model. */
   const handleRawSearch = async (query: string) => {
     const clean = query.trim();
-    if (!clean || isStreaming || isSearching) return;
+    if (!clean || isStreaming) return;
     let conversationId = currentConversation?.id ?? '';
     if (!conversationId) {
       const conv = await createConversation();
@@ -616,7 +672,8 @@ Each question must be answerable by a search. Nothing may follow that section. K
   };
 
   const handleSearch = async (query: string) => {
-    if (!query.trim() || isStreaming || isSearching) return;
+    // a running search does not block a new one: performSearch cancels it, so the newest query wins
+    if (!query.trim() || isStreaming) return;
     if (rawSearchOnly) {
       await handleRawSearch(query);
       return;

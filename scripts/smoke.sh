@@ -109,6 +109,13 @@ rank_badges() {
 # 4f. the Sources badges report the same intent and multiplier fusion applied
 run "ranking badges" rank_badges
 
+search_abort() {
+  node experiments/search-abort.test.mjs
+}
+
+# 4g. a superseded search stops its requests instead of finishing and overwriting
+run "search abort" search_abort
+
 # 5. database tests need PGlite, which is test-only and not in package.json
 if [ ! -d node_modules/@electric-sql/pglite ]; then
   printf '→ installing @electric-sql/pglite (test-only, not saved)\n'

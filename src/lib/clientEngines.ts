@@ -8,14 +8,24 @@ export interface ClientEngine {
   id: string;
   label: string;
   note: string;
-  search: (query: string, limit: number) => Promise<Source[]>;
+  search: (query: string, limit: number, signal?: AbortSignal) => Promise<Source[]>;
 }
 
 const TIMEOUT_MS = 8000;
 
-async function fetchJson(url: string): Promise<unknown> {
+/**
+ * One request, two reasons to stop: the engine's own timeout, and a caller that has moved on.
+ * Cancelling from the caller must end the network work, not just ignore the reply, otherwise a
+ * superseded search keeps burning rate limit for an answer nobody will use.
+ */
+async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const forward = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', forward, { once: true });
+  }
   try {
     const resp = await fetch(url, { signal: controller.signal });
     if (!resp.ok) return null;
@@ -24,6 +34,7 @@ async function fetchJson(url: string): Promise<unknown> {
     return null;
   } finally {
     window.clearTimeout(timer);
+    signal?.removeEventListener('abort', forward);
   }
 }
 
@@ -42,9 +53,10 @@ const hnEngine: ClientEngine = {
   id: 'hn',
   label: 'Hacker News',
   note: 'Algolia index of stories and comments',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&hitsPerPage=${limit}`,
+      signal,
     )) as { hits?: Record<string, unknown>[] } | null;
     const hits = Array.isArray(data?.hits) ? data!.hits : [];
     return hits.map((hit) => {
@@ -68,11 +80,12 @@ const stackExchangeEngine: ClientEngine = {
   id: 'stackexchange',
   label: 'Stack Overflow',
   note: 'Stack Exchange network, answered technical questions',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(
         query,
       )}&site=stackoverflow&pagesize=${limit}&filter=withbody`,
+      signal,
     )) as { items?: Record<string, unknown>[] } | null;
     const items = Array.isArray(data?.items) ? data!.items : [];
     return items.map((item) => {
@@ -94,9 +107,10 @@ const crossrefEngine: ClientEngine = {
   id: 'crossref',
   label: 'Crossref',
   note: 'DOI registry across scholarly publishers',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=${limit}&select=title,URL,DOI,abstract,container-title,issued,author`,
+      signal,
     )) as { message?: { items?: Record<string, unknown>[] } } | null;
     const items = Array.isArray(data?.message?.items) ? data!.message!.items! : [];
     return items.map((item) => {
@@ -135,9 +149,10 @@ const openLibraryEngine: ClientEngine = {
   id: 'openlibrary',
   label: 'Open Library',
   note: 'books, editions and authors',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=${limit}&fields=title,key,author_name,first_publish_year,subject`,
+      signal,
     )) as { docs?: Record<string, unknown>[] } | null;
     return (Array.isArray(data?.docs) ? data!.docs : []).map((doc) => {
       const key = text(doc.key);
@@ -157,9 +172,10 @@ const europePmcEngine: ClientEngine = {
   id: 'europepmc',
   label: 'Europe PMC',
   note: 'biomedical literature and preprints',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(query)}&format=json&pageSize=${limit}`,
+      signal,
     )) as { resultList?: { result?: Record<string, unknown>[] } } | null;
     return (data?.resultList?.result ?? []).map((item) => {
       const doi = text(item.doi);
@@ -182,13 +198,13 @@ const internetArchiveEngine: ClientEngine = {
   id: 'archiveorg',
   label: 'Internet Archive',
   note: 'archived texts, media and pages',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const params = new URLSearchParams({ q: query, rows: String(limit), output: 'json' });
     params.append('fl[]', 'identifier');
     params.append('fl[]', 'title');
     params.append('fl[]', 'year');
     params.append('fl[]', 'description');
-    const data = (await fetchJson(`https://archive.org/advancedsearch.php?${params.toString()}`)) as {
+    const data = (await fetchJson(`https://archive.org/advancedsearch.php?${params.toString()}`, signal)) as {
       response?: { docs?: Record<string, unknown>[] };
     } | null;
     return (data?.response?.docs ?? []).map((doc) => {
@@ -208,9 +224,10 @@ const lemmyEngine: ClientEngine = {
   id: 'lemmy',
   label: 'Lemmy',
   note: 'federated, lightly moderated discussion',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://lemmy.world/api/v3/search?q=${encodeURIComponent(query)}&type_=Posts&limit=${limit}`,
+      signal,
     )) as { posts?: { post?: Record<string, unknown> }[] } | null;
     return (data?.posts ?? []).map(({ post }) => {
       const name = text(post?.name);
@@ -229,11 +246,12 @@ const wikidataEngine: ClientEngine = {
   id: 'wikidata',
   label: 'Wikidata',
   note: 'entity graph: people, orgs, events',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const data = (await fetchJson(
       `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(
         query,
       )}&language=en&uselang=en&limit=${limit}&format=json&origin=*`,
+      signal,
     )) as { search?: Record<string, unknown>[] } | null;
     return (data?.search ?? []).map((entity) => {
       const id = text(entity.id);
@@ -251,10 +269,10 @@ const crtShEngine: ClientEngine = {
   id: 'crtsh',
   label: 'crt.sh (CT logs)',
   note: 'certificate transparency: subdomains and infrastructure',
-  async search(query, limit) {
+  async search(query, limit, signal) {
     const domain = query.trim().match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+/i)?.[0];
     if (!domain) return [];
-    const data = (await fetchJson(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`)) as
+    const data = (await fetchJson(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, signal)) as
       | Record<string, unknown>[]
       | null;
     if (!Array.isArray(data)) return [];
@@ -300,22 +318,25 @@ export async function searchClientEngines(
   engineIds: string[],
   limit: number,
   onEngineResults?: (engineId: string, results: Source[]) => void,
+  signal?: AbortSignal,
 ): Promise<Source[]> {
   const selected = CLIENT_ENGINES.filter((engine) => engineIds.includes(engine.id));
-  if (selected.length === 0) return [];
+  if (selected.length === 0 || signal?.aborted) return [];
   const lists = await Promise.all(
     selected.map(async (engine) => {
+      if (signal?.aborted) return [];
       try {
-        const results = (await engine.search(query, Math.max(3, Math.min(limit, 10)))).filter((item) => item.url);
-        // stream partials so the cluster map can light up engine by engine
-        if (results.length > 0) onEngineResults?.(engine.id, results);
+        const results = (await engine.search(query, Math.max(3, Math.min(limit, 10)), signal)).filter((item) => item.url);
+        // stream partials so the cluster map can light up engine by engine — but never for a
+        // run that has already been replaced
+        if (results.length > 0 && !signal?.aborted) onEngineResults?.(engine.id, results);
         return results;
       } catch {
         return [];
       }
     }),
   );
-  return lists.flat();
+  return signal?.aborted ? [] : lists.flat();
 }
 
 const urlKey = (url: string) =>

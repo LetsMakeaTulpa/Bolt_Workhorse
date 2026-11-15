@@ -284,6 +284,10 @@ export interface FusionOptions {
   weights?: Record<string, number>;
   /** set false to disable the freshness multiplier */
   recency?: boolean;
+  /** how much a fully fresh result can add to its score (1.2 by default) */
+  recencyGain?: number;
+  /** exponent on term coverage, so relevance outranks rank (1.5 by default) */
+  relevanceExponent?: number;
 }
 
 /** IDF-weighted term coverage of the title/snippet by the query. */
@@ -340,8 +344,17 @@ export function fuseResults(
   lists: Record<string, Source[]>,
   options: FusionOptions = {},
 ): Source[] {
-  const { limit = 40, perDomain = 2, relativeGate = 0.35, agreement = 0.02, k = 60, perEngine = 10, now = Date.now() } =
-    options;
+  const {
+    limit = 40,
+    perDomain = 2,
+    relativeGate = 0.35,
+    agreement = 0.02,
+    k = 60,
+    perEngine = 10,
+    now = Date.now(),
+    recencyGain = 1.2,
+    relevanceExponent = 1.5,
+  } = options;
   const relevanceQuery = stripDorkOperators(query) || query;
   const intent = queryIntent(query, now);
   // Weights and intent are read from the query as typed: stripping operators is only about term
@@ -387,7 +400,10 @@ export function fuseResults(
     item.rel = relevance(relevanceQuery, item, df, all.length);
     // a freshness-seeking query lifts dated recent results; a timeless one ignores dates
     item.recency = useRecency ? recencyWeight(item.published, intent.fresh, now) : 0;
-    item.score = (item.weight / (k + item.rank + 1)) * item.rel ** 1.5 * (1 + 0.6 * item.recency);
+    // Freshness multiplies rather than adds, so it scales with how well the result already
+    // matches: a stale page that mentions every term still outranks an unrelated fresh one.
+    item.score =
+      (item.weight / (k + item.rank + 1)) * item.rel ** relevanceExponent * (1 + recencyGain * item.recency);
   }
 
   const best = Math.max(...all.map((item) => item.rel));

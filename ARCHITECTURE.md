@@ -22,13 +22,22 @@ browser ──supabase-js──> Postgres (RLS, per user)
    └─ POST /functions/v1/llm-proxy/chat   streaming completions via Featherless
 ```
 
-`src/App.tsx` owns all state (conversation, messages, results, panel tab, settings). There is no
-router. That is the known scaling wall: the first extraction should be a `useSearch` hook that
-owns fetch, fusion and abort.
+`src/App.tsx` owns the conversation half: messages, streaming content, panel tab, settings, and the
+completion itself. There is no router. Search used to live here too and became the first scaling
+wall, so it was extracted into `src/hooks/useSearch.ts` — see the search path below.
 
 ## Search path
 
-`performSearch` in `App.tsx`:
+`src/hooks/useSearch.ts` owns search: the run controller, `results`, `isSearching`, `status`,
+`issues`, `lastQuery`, and `performSearch` / `runLane` / `cancelSearch` / `runAborted` /
+`clearResults`. App keeps what is not search and injects it — `logActivity`, `ensureConversation`,
+`saveSources`, `closeActivity`, `abortStream` — so the hook never touches messages or the model.
+
+One run at a time: a new run aborts the previous controller, and every `setState` is guarded by an
+`isCurrent()` check, so a slow engine cannot write over newer results. Cancelling aborts the search
+and the completion together, because a stale answer is as wrong as stale sources.
+
+`performSearch` itself:
 
 1. Split the selected engines into server and browser sets.
 2. Run both in parallel. Server results arrive with an `engine_status[]` array — one entry per

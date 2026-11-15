@@ -344,7 +344,10 @@ export function fuseResults(
     options;
   const relevanceQuery = stripDorkOperators(query) || query;
   const intent = queryIntent(query, now);
-  const weights = options.weights ?? engineWeights(relevanceQuery, now);
+  // Weights and intent are read from the query as typed: stripping operators is only about term
+  // matching, and doing it earlier turned `CVE-2024-3094` into `CVE 2024 3094`, which no longer
+  // looks like an identifier, so the navigational intent that disables semantic retrieval was lost.
+  const weights = options.weights ?? engineWeights(query, now);
   const useRecency = options.recency !== false;
   // a `site:` lane is *meant* to be one domain; the diversity cap would flatten it to a
   // couple of sources, so scoped queries get a much higher per-domain allowance

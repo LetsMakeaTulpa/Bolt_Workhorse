@@ -1,6 +1,7 @@
 import { Message, Source } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { SearchBar } from './SearchBar';
+import { EngineKeyRow } from './EngineKeyRow';
 import { WelcomeScreen } from './WelcomeScreen';
 import { Globe, Loader2, AlertTriangle, Filter } from 'lucide-react';
 import { ENGINE_LABELS } from '../lib/engines';
@@ -32,6 +33,11 @@ interface ChatAreaProps {
   onUseDorksChange: (value: boolean) => void;
   /** stop the running search, keeping whatever it has already collected */
   onCancelSearch?: () => void;
+  /** secret names this account has stored — names only, never values */
+  storedKeyNames?: string[];
+  /** the per-account keys table is missing from the project */
+  keysUnavailable?: boolean;
+  onOpenSettings?: () => void;
   onRetrySearch?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
@@ -57,6 +63,9 @@ export function ChatArea({
   useDorks,
   onUseDorksChange,
   onCancelSearch,
+  storedKeyNames,
+  keysUnavailable,
+  onOpenSettings,
   onRetrySearch,
   onSaveResults,
   onFollowUp,
@@ -117,6 +126,13 @@ export function ChatArea({
             disabled={isStreaming}
             searching={isSearching || isStreaming}
             onCancel={onCancelSearch}
+          />
+          <EngineKeyRow
+            engines={engines}
+            storedKeys={storedKeyNames ?? []}
+            issues={engineIssues}
+            unavailable={keysUnavailable}
+            onOpenSettings={onOpenSettings}
           />
           {engineIssues && engineIssues.length > 0 && (
             <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">

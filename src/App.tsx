@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearch } from './hooks/useSearch';
+import { useEngineKeys } from './hooks/useEngineKeys';
 import { supabase } from './lib/supabase';
 import { fetchModels, chatCompletion, fallbackChain } from './lib/api';
 import { DEFAULT_ENGINES } from './lib/engines';
@@ -220,6 +221,9 @@ export default function App() {
   };
 
   const abortStream = useCallback(() => streamRunRef.current?.abort(), []);
+
+  // names only: the composer shows which providers are configured, never a value
+  const { names: storedKeyNames, unavailable: keysUnavailable, refresh: refreshKeyNames } = useEngineKeys(session?.user?.id);
 
   const {
     results: searchResults,
@@ -594,6 +598,9 @@ Each question must be answerable by a search. Nothing may follow that section. K
               onSearch={handleSearch}
               onRunLane={handleRunLane}
               onCancelSearch={cancelSearch}
+              storedKeyNames={storedKeyNames}
+              keysUnavailable={keysUnavailable}
+              onOpenSettings={() => setShowSettings(true)}
               searchLabel={searchStatus}
               engineIssues={engineIssues}
               laneYield={laneYield}
@@ -668,7 +675,11 @@ Each question must be answerable by a search. Nothing may follow that section. K
           presets={presets}
           selectedPreset={selectedPreset}
           onSelectPreset={setSelectedPreset}
-          onClose={() => setShowSettings(false)}
+          onClose={() => {
+            setShowSettings(false);
+            // a key saved in settings must show up in the composer without a reload
+            void refreshKeyNames();
+          }}
           userId={session?.user?.id}
         />
       )}

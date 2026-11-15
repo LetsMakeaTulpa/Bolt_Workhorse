@@ -27,7 +27,7 @@ npm run smoke -- --live  # + read-only probes against the live Supabase project 
 
 Rules a change has to respect:
 
-- **Green means every check that ran passed, 0 failed** — 16 on a full install (12 that always run,
+- **Green means every check that ran passed, 0 failed** — 17 on a full install (13 that always run,
   plus 4 database checks). The script exits non-zero if anything fails; do not merge on a red run,
   and do not treat a red run as "probably the environment" without reading the log. Failing checks
   print the last 20 lines of their output.
@@ -63,6 +63,12 @@ Rules a change has to respect:
    ```
 
 5. Update the expected total in this document only after the check passes locally.
+
+A component can be asserted on without a browser: bundle it with `--jsx=automatic` and
+`--external:react --external:react-dom` **into `node_modules/.cache/` rather than `/tmp`** (an
+external `react` cannot resolve from the OS temp dir), then render it with `renderToStaticMarkup`
+and assert on the HTML. `experiments/engine-key-status.test.mjs` does this for the composer's key
+row; it proves the wiring and the copy, not the layout.
 
 The default run makes no network calls. Anything that needs a live service goes behind `--live` and
 must be read-only.

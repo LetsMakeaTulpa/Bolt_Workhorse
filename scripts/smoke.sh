@@ -116,6 +116,23 @@ search_abort() {
 # 4g. a superseded search stops its requests instead of finishing and overwriting
 run "search abort" search_abort
 
+key_status() {
+  # inside the project so the external `react` in the component bundle resolves to the same copy
+  # the test renders with; a /tmp bundle cannot see node_modules
+  local out=node_modules/.cache/fieldwork
+  mkdir -p "$out"
+  npx --yes esbuild src/lib/engineKeyStatus.ts --bundle --format=esm \
+    --outfile="$out/engine-key-status.mjs" --log-level=error || return 1
+  npx --yes esbuild src/components/EngineKeyRow.tsx --bundle --format=esm --jsx=automatic \
+    --external:react --external:react-dom \
+    --outfile="$out/engine-key-row.mjs" --log-level=error || return 1
+  KEYSTATUS_MODULE="$PWD/$out/engine-key-status.mjs" KEYROW_MODULE="$PWD/$out/engine-key-row.mjs" \
+    node experiments/engine-key-status.test.mjs
+}
+
+# 4i. the composer shows which selected engines have a key before a search runs
+run "engine key status" key_status
+
 ranking_benchmark() {
   node experiments/ranking-harness.mjs --check
 }

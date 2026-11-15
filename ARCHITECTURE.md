@@ -122,7 +122,10 @@ refusing *before* spending provider credit.
 did), `ranking-harness` (`node experiments/ranking-harness.mjs` — fixed query set with graded
 judgements, before/after nDCG/MRR; `--check` fails on regression). The query set is *contested*:
 queries pair results with near-identical term coverage so only engine trust or a date can separate
-them. An uncontested set scores the same under any weighting and silently measures nothing., `web-engine-pipeline` (handler
+them. An uncontested set scores the same under any weighting and silently measures nothing.
+It also reports `margin`, the order-free gap between the best answer and the best lesser result:
+nDCG cannot see a weighting that leaves a competing result ten times further behind without
+changing which result is first, and that safety is what intent weighting mostly buys., `web-engine-pipeline` (handler
 statuses end to end), `provider-keys`, `followups`, plus PGlite suites for RLS and rate limits.
 
 `scripts/verify-engines.mjs` probes the deployed function. `scripts/dev-preview.sh` restarts the

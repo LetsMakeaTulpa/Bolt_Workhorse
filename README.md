@@ -154,6 +154,10 @@ Apply migrations in filename order (`supabase db push`, or paste them into the S
   `user_id = auth.uid()` policies; `anon` loses every private table
 - `20261115150000_add_request_rate_limits.sql` — counter table plus the atomic
   `consume_rate_limit()` used by the inference proxy
+- `20261115160000_user_engine_keys.sql` — per-account provider keys, owner-only RLS
+
+Both functions must be redeployed after the schema:
+[DEPLOY.md](DEPLOY.md) is the runbook for that order, its verification steps and its rollback.
 
 ## Rate limits
 

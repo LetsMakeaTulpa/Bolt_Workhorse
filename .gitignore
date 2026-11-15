@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# secrets: key dumps and the env file the importer writes
+keys.txt
+keys*.txt
+.env.functions
+*.report.txt
+
+# dev-server runtime state (scripts/dev-preview.sh)
+.preview-host
+.vite.pid
+
+# local screenshots taken while checking the UI
+artifacts/
+
+# Supabase CLI cache
+supabase/.temp/

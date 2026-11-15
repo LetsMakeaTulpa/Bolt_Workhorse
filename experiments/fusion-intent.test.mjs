@@ -4,6 +4,7 @@
 // Run: node experiments/fusion-intent.test.mjs
 
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -11,14 +12,19 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const MODULE = '/tmp/fieldwork-fusion-intent.mjs';
+// forward slashes and a real shell so the bundle also builds when spawned through cmd.exe
+const MODULE = (process.env.FUSION_MODULE ?? '/tmp/fieldwork-fusion-intent.mjs').replaceAll('\\', '/');
+const WINDOWS = process.platform === 'win32';
 execFileSync(
-  'npx',
+  WINDOWS ? 'npx.cmd' : 'npx',
   ['--yes', 'esbuild', 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
-  { stdio: 'inherit' },
+  { stdio: 'inherit', shell: WINDOWS },
 );
 
-const { engineWeights, fuseResults, queryIntent, recencyWeight } = await import(`${MODULE}?t=${Date.now()}`);
+// a file URL, not a bare path: Windows would read `C:/…` as the protocol `c:`
+const { engineWeights, fuseResults, fuseResultsDetailed, laneContribution, queryIntent, recencyWeight, summarizeLaneYield } = await import(
+  `${pathToFileURL(MODULE).href}?t=${Date.now()}`
+);
 
 // a fixed clock so freshness maths never depends on the day the suite runs
 const NOW = Date.UTC(2026, 10, 15);
@@ -133,6 +139,75 @@ const irrelevant = fuseResults(
   { now: NOW, limit: 10 },
 );
 check('a fresh but irrelevant result is still dropped', irrelevant.length === 0, `${irrelevant.length} kept`);
+
+// per-lane yield: an engine that answers with off-topic filler is visible after the gate
+const laneDetail = fuseResultsDetailed(
+  'latest eu ai act enforcement',
+  {
+    exa: [
+      { title: 'EU AI Act enforcement begins', url: 'https://act.example.com/eu-ai-act', snippet: 'eu ai act enforcement', source_engine: 'exa' },
+      { title: 'Pizza ovens of Naples', url: 'https://food.example.com/pizza', snippet: 'dough and tomatoes', source_engine: 'exa' },
+    ],
+    tavily: [
+      { title: 'Dough hydration guide', url: 'https://food.example.com/dough', snippet: 'flour water salt', source_engine: 'tavily' },
+    ],
+  },
+  { now: NOW, limit: 10 },
+);
+const laneRows = Object.fromEntries(laneDetail.laneYield.map((row) => [row.lane, row]));
+check('a lane reports what it returned', laneRows.exa?.returned === 2, JSON.stringify(laneRows.exa));
+check('a lane reports what the gate kept', laneRows.exa?.kept === 1, JSON.stringify(laneRows.exa));
+check('off-topic yield is returned minus kept', laneRows.exa?.offTopic === 1, JSON.stringify(laneRows.exa));
+check(
+  'a lane whose results were all off-topic shows a zero yield',
+  laneRows.tavily?.returned === 1 && laneRows.tavily?.kept === 0 && laneRows.tavily?.offTopic === 1,
+  JSON.stringify(laneRows.tavily),
+);
+check('the yield arrives alongside the results', laneDetail.results.length === 1, `${laneDetail.results.length} results`);
+check('the yield is not attached to the sources', !('lane' in (laneDetail.results[0] ?? {})), JSON.stringify(Object.keys(laneDetail.results[0] ?? {})));
+
+const emptyLane = fuseResultsDetailed(
+  'graph neural networks',
+  { exa: [], tavily: [{ title: 'Graph neural networks survey', url: 'https://gnn.example.com/s', snippet: 'graph neural networks', source_engine: 'tavily' }] },
+  { now: NOW },
+);
+const emptyRows = Object.fromEntries(emptyLane.laneYield.map((row) => [row.lane, row]));
+check('a lane that returned nothing is still listed', emptyRows.exa?.returned === 0 && emptyRows.exa?.kept === 0, JSON.stringify(emptyRows.exa));
+
+const dorkRows = summarizeLaneYield([
+  { lane: 'exa·q1', engine: 'exa', returned: 4, kept: 2, offTopic: 2 },
+  { lane: 'exa·q2', engine: 'exa', returned: 2, kept: 2, offTopic: 0 },
+  { lane: 'tavily', engine: 'tavily', returned: 1, kept: 1, offTopic: 0 },
+]);
+check(
+  'dork lanes sum back to one engine',
+  dorkRows.length === 2 && dorkRows[0].engine === 'exa' && dorkRows[0].returned === 6 && dorkRows[0].kept === 4 && dorkRows[0].offTopic === 2,
+  JSON.stringify(dorkRows),
+);
+check('summarising keeps the order lanes appeared in', dorkRows[1].engine === 'tavily');
+
+// dead lanes: an engine that answered with nothing must be named, not silently absent
+const split = laneContribution(
+  [
+    { lane: 'exa', engine: 'exa', returned: 4, kept: 2, offTopic: 2 },
+    { lane: 'tavily', engine: 'tavily', returned: 0, kept: 0, offTopic: 0 },
+    { lane: 'arxiv', engine: 'arxiv', returned: 3, kept: 3, offTopic: 0 },
+    { lane: 'hn', engine: 'hn', returned: 0, kept: 0, offTopic: 0 },
+  ],
+  ['hn'],
+);
+check('a dead lane is classified, not dropped', split.dead.length === 1 && split.dead[0].engine === 'tavily', JSON.stringify(split.dead));
+check('a lane already reported as failed is not repeated as dead', !split.dead.some((row) => row.engine === 'hn'), JSON.stringify(split.dead));
+check('wasted excludes dead and clean lanes', split.wasted.length === 1 && split.wasted[0].engine === 'exa', JSON.stringify(split.wasted));
+check(
+  'a lane that kept everything appears in neither',
+  !split.dead.concat(split.wasted).some((row) => row.engine === 'arxiv'),
+  JSON.stringify([...split.dead, ...split.wasted].map((row) => row.engine)),
+);
+check(
+  'a lane that returned only off-topic results is wasted, not dead',
+  laneContribution([{ lane: 'exa', engine: 'exa', returned: 2, kept: 0, offTopic: 2 }]).dead.length === 0,
+);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);

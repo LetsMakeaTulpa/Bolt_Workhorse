@@ -226,6 +226,7 @@ export default function App() {
     isSearching,
     status: searchStatus,
     issues: engineIssues,
+    laneYield,
     lastQuery: lastSearchQuery,
     performSearch,
     cancelSearch: cancelSearchRun,
@@ -595,6 +596,7 @@ Each question must be answerable by a search. Nothing may follow that section. K
               onCancelSearch={cancelSearch}
               searchLabel={searchStatus}
               engineIssues={engineIssues}
+              laneYield={laneYield}
               rawOnly={rawSearchOnly}
               onRawOnlyChange={setRawSearchOnly}
               engines={engines}

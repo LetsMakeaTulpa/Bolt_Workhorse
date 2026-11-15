@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { webSearch } from '../lib/api';
 import { CLIENT_ENGINE_IDS, searchClientEngines } from '../lib/clientEngines';
-import { fuseResults } from '../lib/fusion';
+import { fuseResultsDetailed, summarizeLaneYield } from '../lib/fusion';
+import type { LaneYield } from '../lib/fusion';
 import { DORK_ENGINES, mergeEngineIssues, summarizeEngineStatus, type EngineIssue } from '../lib/engines';
 import { expandLane } from '../lib/dorks';
 import type { ActivityLog, ResearchPreset, Source } from '../types';
@@ -54,6 +55,8 @@ export function useSearch({
   const [status, setStatus] = useState('');
   /** engines that could not answer (missing key, rejected key, unrecognised name) for the strip */
   const [issues, setIssues] = useState<EngineIssue[]>([]);
+  /** per-engine counts from the last fusion: what each produced, and what the gate kept */
+  const [laneYield, setLaneYield] = useState<LaneYield[]>([]);
   /** the query behind the current result set, so the panel can explain the ranking */
   const [lastQuery, setLastQuery] = useState('');
   /** the in-flight search; a newer run aborts it so stale results cannot land on top */
@@ -68,6 +71,7 @@ export function useSearch({
     setResults([]);
     setStatus('');
     setIssues([]);
+    setLaneYield([]);
   }, []);
 
   const performSearch = useCallback(
@@ -103,6 +107,7 @@ export function useSearch({
 
         // clear the map for this run, then let engines stream their nodes in as they answer
         setResults([]);
+        setLaneYield([]);
         const [serverResponse, browserResults] = await Promise.all([
           serverEngines.length > 0
             ? webSearch(query, serverEngines, maxResults, useDorks, selectedPreset, true, controller.signal).then((response) => {
@@ -128,16 +133,19 @@ export function useSearch({
         // a superseded run must not touch the list, the map or the database
         if (!isCurrent()) return [];
 
-        // group every engine's ranking separately, then fuse across them
+        // group every engine's ranking separately, then fuse across them. Seeding each engine that
+        // ran turns "answered with nothing" into a 0 lane in the yield report instead of a gap.
         const perEngine: Record<string, Source[]> = {};
+        for (const engine of enginesToUse) perEngine[engine] = [];
         for (const item of [...(serverResponse?.results ?? []), ...browserResults]) {
           const engine = item.source_engine || 'unknown';
           (perEngine[engine] ??= []).push(item);
         }
-        const fused = fuseResults(query, perEngine, { limit: 40 });
+        const { results: fused, laneYield: yields } = fuseResultsDetailed(query, perEngine, { limit: 40 });
         if (!isCurrent()) return [];
 
         setResults(fused);
+        setLaneYield(summarizeLaneYield(yields));
 
         await logActivity(convId, 'rank', `Reciprocal Rank Fusion applied to ${fused.length} results`, {
           engines_used: [...(serverResponse?.engines_used ?? []), ...browserEngines],
@@ -160,6 +168,7 @@ export function useSearch({
         }
         console.error('Search error:', err);
         setResults([]);
+        setLaneYield([]);
         await logActivity(convId, 'search', `Search failed: ${err instanceof Error ? err.message : 'unknown'}`, {}, 'failed');
         return [];
       } finally {
@@ -221,6 +230,7 @@ export function useSearch({
       setIsSearching(true);
       setResults([]);
       setIssues([]);
+      setLaneYield([]);
       setStatus(`Lane "${lane}" — starting ${queries.length} queries`);
       await logActivity(
         conversationId,
@@ -239,7 +249,11 @@ export function useSearch({
         );
       }
 
+      // one lane per engine per query, seeded empty so a dead lane reports 0 rather than vanishing
       const perEngineQuery: Record<string, Source[]> = {};
+      for (let index = 0; index < queries.length; index += 1) {
+        for (const engine of laneEngines) perEngineQuery[`${engine}·q${index}`] = [];
+      }
       let finished = 0;
 
       const runQuery = async (query: string, index: number) => {
@@ -288,9 +302,10 @@ export function useSearch({
         };
         await Promise.all(Array.from({ length: Math.min(2, queries.length) }, worker));
 
-        const fused = fuseResults(cleanTarget, perEngineQuery, { limit: 60 });
+        const { results: fused, laneYield: yields } = fuseResultsDetailed(cleanTarget, perEngineQuery, { limit: 60 });
         if (!isLaneCurrent()) return;
         setResults(fused);
+        setLaneYield(summarizeLaneYield(yields));
         await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { lane, queries }, 'completed');
         if (fused.length === 0) {
           await logActivity(
@@ -319,6 +334,7 @@ export function useSearch({
     isSearching,
     status,
     issues,
+    laneYield,
     lastQuery,
     performSearch,
     cancelSearch,

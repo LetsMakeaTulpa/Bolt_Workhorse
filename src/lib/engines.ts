@@ -147,7 +147,7 @@ export interface EngineIssue {
   severity: 'warning' | 'info';
 }
 
-const ENGINE_LABELS = new Map(ENGINE_CATALOG.map((engine) => [engine.id, engine.label]));
+export const ENGINE_LABELS = new Map(ENGINE_CATALOG.map((engine) => [engine.id, engine.label]));
 
 const FAILURE_STATUSES = new Set(['missing_key', 'error', 'unknown_engine']);
 

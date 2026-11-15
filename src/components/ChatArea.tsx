@@ -2,8 +2,11 @@ import { Message, Source } from '../types';
 import { MessageBubble } from './MessageBubble';
 import { SearchBar } from './SearchBar';
 import { WelcomeScreen } from './WelcomeScreen';
-import { Globe, Loader2, AlertTriangle } from 'lucide-react';
+import { Globe, Loader2, AlertTriangle, Filter } from 'lucide-react';
+import { ENGINE_LABELS } from '../lib/engines';
 import type { EngineIssue } from '../lib/engines';
+import { laneContribution, summarizeLaneYield } from '../lib/fusion';
+import type { LaneYield } from '../lib/fusion';
 
 interface ChatAreaProps {
   messages: Message[];
@@ -19,6 +22,8 @@ interface ChatAreaProps {
   searchLabel?: string;
   /** engines that could not answer, shown so an empty result list explains itself */
   engineIssues?: EngineIssue[];
+  /** what each engine returned last run, and what the relevance gate threw away */
+  laneYield?: LaneYield[];
   rawOnly?: boolean;
   onRawOnlyChange?: (value: boolean) => void;
   engines: string[];
@@ -44,6 +49,7 @@ export function ChatArea({
   onRunLane,
   searchLabel,
   engineIssues,
+  laneYield,
   rawOnly,
   onRawOnlyChange,
   engines,
@@ -55,6 +61,16 @@ export function ChatArea({
   onSaveResults,
   onFollowUp,
 }: ChatAreaProps) {
+  // an engine that failed for its own reason is named by the issue strip; counting it as dead here
+  // would flag the same engine twice for two different causes
+  const explained = (engineIssues ?? [])
+    .filter((issue) => issue.severity === 'warning')
+    .map((issue) => issue.engine);
+  const { dead: deadLanes, wasted: offTopicLanes } = laneContribution(
+    summarizeLaneYield(laneYield ?? []),
+    explained,
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
@@ -119,6 +135,40 @@ export function ChatArea({
                   <span className="opacity-80">{issue.label}</span>
                 </span>
               ))}
+            </div>
+          )}
+          {(deadLanes.length > 0 || offTopicLanes.length > 0) && (
+            <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-text-muted">
+              <Filter size={11} className="text-text-muted" />
+              <span className="opacity-80">Lane yield</span>
+              {deadLanes.map((row) => {
+                const label = ENGINE_LABELS.get(row.engine) ?? row.engine;
+                return (
+                  <span
+                    key={`dead:${row.engine}`}
+                    title={`${label} answered this query with no results at all`}
+                    className="flex items-center gap-1 rounded border border-border-subtle bg-bg-elevated px-1.5 py-0.5 text-text-muted"
+                  >
+                    <span className="font-medium">{label}</span>
+                    <span className="opacity-80">no results</span>
+                  </span>
+                );
+              })}
+              {offTopicLanes.map((row) => {
+                const label = ENGINE_LABELS.get(row.engine) ?? row.engine;
+                return (
+                  <span
+                    key={row.engine}
+                    title={`${row.offTopic} of ${row.returned} results from ${label} were dropped by the relevance gate as off-topic`}
+                    className="flex items-center gap-1 rounded border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-warning"
+                  >
+                    <span className="font-medium">{label}</span>
+                    <span className="opacity-80">
+                      {row.kept}/{row.returned}
+                    </span>
+                  </span>
+                );
+              })}
             </div>
           )}
           {searchEnabled && (

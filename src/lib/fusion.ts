@@ -250,6 +250,8 @@ export function engineWeights(
 
 type Candidate = Source & {
   engine: string;
+  /** the lane this came in on: a bare engine id, or `engine·q3` for a dork lane's queries */
+  lane: string;
   key: string;
   doi: string | null;
   rank: number;
@@ -336,14 +338,76 @@ function resolveEntities(items: Candidate[]): Entity[] {
 }
 
 /**
- * Fuse per-engine result lists into one ranked, de-duplicated source list.
+ * What one lane contributed, and how much of it the relevance gate threw away. `offTopic` is the
+ * number a lane produced that did not survive: a high count names the engine that padded the pool
+ * with matches for the words rather than the question.
+ */
+export interface LaneYield {
+  lane: string;
+  /** the underlying engine, without a dork query suffix */
+  engine: string;
+  /** usable results the lane contributed, after the per-engine cap */
+  returned: number;
+  /** how many of those cleared the relevance gate */
+  kept: number;
+  /** `returned - kept` */
+  offTopic: number;
+}
+
+/**
+ * One row per engine, summing the lanes it ran under (`exa·q1`, `exa·q2` -> `exa`), in the order
+ * the lanes were introduced so the caller can display them stably.
+ */
+export function summarizeLaneYield(rows: LaneYield[]): LaneYield[] {
+  const merged = new Map<string, LaneYield>();
+  for (const row of rows) {
+    const current = merged.get(row.engine);
+    if (!current) {
+      merged.set(row.engine, { ...row, lane: row.engine });
+      continue;
+    }
+    current.returned += row.returned;
+    current.kept += row.kept;
+    current.offTopic += row.offTopic;
+  }
+  return [...merged.values()];
+}
+
+export interface LaneContribution {
+  /** lanes that ran and produced nothing at all */
+  dead: LaneYield[];
+  /** lanes that produced results and lost some of them to the gate */
+  wasted: LaneYield[];
+}
+
+/**
+ * Split yield rows for display: dead lanes (returned nothing) and wasteful lanes (lost results),
+ * leaving out engines already explained by a failure report so the same engine is not flagged twice.
+ */
+export function laneContribution(rows: LaneYield[], explained: string[] = []): LaneContribution {
+  const skip = new Set(explained);
+  const dead: LaneYield[] = [];
+  const wasted: LaneYield[] = [];
+  for (const row of rows) {
+    if (row.returned === 0) {
+      if (!skip.has(row.engine)) dead.push(row);
+      continue;
+    }
+    if (row.offTopic > 0) wasted.push(row);
+  }
+  return { dead, wasted };
+}
+
+/**
+ * Fuse per-engine result lists into one ranked, de-duplicated source list, keeping the per-lane
+ * yield so a caller can report which engines produced off-topic results.
  * `lists` maps engine id -> its results in the order that engine ranked them.
  */
-export function fuseResults(
+export function fuseResultsDetailed(
   query: string,
   lists: Record<string, Source[]>,
   options: FusionOptions = {},
-): Source[] {
+): { results: Source[]; laneYield: LaneYield[] } {
   const {
     limit = 40,
     perDomain = 2,
@@ -367,14 +431,22 @@ export function fuseResults(
   const siteScoped = /\bsite:/i.test(query);
   const domainCap = siteScoped ? Math.max(perDomain, 12) : perDomain;
 
+  // every lane gets a row up front, so an engine that answered with nothing still says so
+  const yieldByLane = new Map<string, LaneYield>();
+  for (const lane of Object.keys(lists)) {
+    yieldByLane.set(lane, { lane, engine: lane.split('·')[0], returned: 0, kept: 0, offTopic: 0 });
+  }
+
   const all: Candidate[] = [];
   for (const [engine, results] of Object.entries(lists)) {
     results.slice(0, perEngine).forEach((result, index) => {
       const key = canonicalUrl(result.url);
       if (!key) return;
+      yieldByLane.get(engine)!.returned += 1;
       all.push({
         ...result,
         engine,
+        lane: engine,
         key,
         doi: doiOf(result.url),
         rank: index,
@@ -387,7 +459,7 @@ export function fuseResults(
       });
     });
   }
-  if (all.length === 0) return [];
+  if (all.length === 0) return { results: [], laneYield: [...yieldByLane.values()] };
 
   const df = new Map<string, number>();
   for (const item of all) {
@@ -408,6 +480,7 @@ export function fuseResults(
 
   const best = Math.max(...all.map((item) => item.rel));
   const kept = all.filter((item) => item.rel >= Math.max(0.1, relativeGate * best));
+  for (const item of kept) yieldByLane.get(item.lane)!.kept += 1;
   const strong = kept.filter((item) => item.rel >= 0.5);
   const tail = kept.filter((item) => item.rel < 0.5);
 
@@ -456,11 +529,15 @@ export function fuseResults(
   // engine's result always led, which made the intent weights barely visible in the top slots.
   chosen.sort((a, b) => b.score - a.score);
 
-  return chosen.map((entity, index) => {
+  const laneYield = [...yieldByLane.values()].map((row) => ({ ...row, offTopic: row.returned - row.kept }));
+
+  const results = chosen.map((entity, index) => {
+    // `lane` is bookkeeping for the yield report, not part of a source
+    const { lane: _lane, ...rep } = entity.rep;
     const engines = [...entity.engines];
     const mergedSnippet = entity.members.map((member) => member.snippet).find((snippet) => snippet && snippet.length > 0);
     return {
-      ...entity.rep,
+      ...rep,
       engines,
       relevance: Number(entity.rel.toFixed(3)),
       relevance_score: entity.score,
@@ -469,4 +546,15 @@ export function fuseResults(
       citation_id: `[${index + 1}]`,
     };
   });
+
+  return { results, laneYield };
+}
+
+/** The ranked list alone, for callers that do not need the per-lane yield. */
+export function fuseResults(
+  query: string,
+  lists: Record<string, Source[]>,
+  options: FusionOptions = {},
+): Source[] {
+  return fuseResultsDetailed(query, lists, options).results;
 }

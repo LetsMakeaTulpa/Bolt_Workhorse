@@ -145,6 +145,8 @@ export interface ChatStreamCallbacks {
   onError: (error: string) => void;
   /** Fired when the primary model could not answer and the next candidate took over. */
   onModelSwitch?: (from: string, to: string, reason: string) => void;
+  /** Fired instead of onDone/onError when the caller aborted: `partial` is what had streamed. */
+  onAbort?: (partial: string) => void;
 }
 
 /**
@@ -288,7 +290,12 @@ interface AttemptResult {
   tokens: number;
   content: string;
   retryable: boolean;
+  /** the caller cancelled: not a failure, so it must not trigger a fallback or an error toast */
+  aborted?: boolean;
 }
+
+const wasAborted = (signal?: AbortSignal, error?: unknown): boolean =>
+  Boolean(signal?.aborted) || (error instanceof DOMException && error.name === 'AbortError');
 
 /** One model, one stream. Never reports failure itself — the caller decides whether to fall back. */
 async function streamAttempt(
@@ -296,12 +303,17 @@ async function streamAttempt(
   messages: { role: string; content: string }[],
   callbacks: ChatStreamCallbacks,
   temperature?: number,
+  signal?: AbortSignal,
 ): Promise<AttemptResult> {
+  // declared outside the try so a cancel can hand back what already streamed
+  let content = '';
+  let tokens = 0;
   try {
     const resp = await fetch(`${SUPABASE_URL}/functions/v1/llm-proxy/chat`, {
       method: 'POST',
       headers: await proxyHeaders(),
       body: JSON.stringify({ model, messages, stream: true, temperature }),
+      signal,
     });
 
     if (!resp.ok) {
@@ -326,11 +338,14 @@ async function streamAttempt(
     }
 
     const decoder = new TextDecoder();
-    let content = '';
-    let tokens = 0;
     let buffer = '';
 
     while (true) {
+      // stop as soon as the caller cancels, without waiting for the next token to arrive
+      if (signal?.aborted) {
+        void reader.cancel().catch(() => {});
+        return { ok: false, error: 'Stopped', tokens, content, retryable: false, aborted: true };
+      }
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -371,6 +386,9 @@ async function streamAttempt(
     }
     return { ok: true, error: '', tokens, content, retryable: false };
   } catch (err) {
+    if (wasAborted(signal, err)) {
+      return { ok: false, error: 'Stopped', tokens, content, retryable: false, aborted: true };
+    }
     const message = err instanceof Error ? err.message : 'Unknown error';
     return { ok: false, error: message, tokens: 0, content: '', retryable: true };
   }
@@ -387,12 +405,22 @@ export async function chatCompletion(
   callbacks: ChatStreamCallbacks,
   temperature?: number,
   fallbacks: string[] = [],
+  signal?: AbortSignal,
 ) {
   const chain = [model, ...fallbacks.filter((candidate) => candidate && candidate !== model)];
   let lastError = `${model} is unavailable`;
 
   for (const [index, current] of chain.entries()) {
-    const attempt = await streamAttempt(current, messages, callbacks, temperature);
+    if (signal?.aborted) {
+      callbacks.onAbort?.('');
+      return;
+    }
+    const attempt = await streamAttempt(current, messages, callbacks, temperature, signal);
+    // a cancelled run owns no answer: no fallback, no error, no onDone
+    if (attempt.aborted) {
+      callbacks.onAbort?.(attempt.content);
+      return;
+    }
     if (attempt.ok) {
       recordModelResult(current, true);
       callbacks.onDone(attempt.content);

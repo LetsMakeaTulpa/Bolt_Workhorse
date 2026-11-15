@@ -11,6 +11,16 @@ globalThis.localStorage = {
   removeItem: (k) => store.delete(k),
 };
 
+// supabase-js builds a realtime client eagerly on import and insists on a WebSocket constructor,
+// which Node 20 does not have. Nothing here opens a socket, so a stub is enough to import api.ts.
+if (!globalThis.WebSocket) {
+  globalThis.WebSocket = class {
+    close() {}
+    addEventListener() {}
+    removeEventListener() {}
+  };
+}
+
 const {
   chatCompletion, fallbackChain, isRetryableModelError, modelReliability, recordModelResult,
   modelHealthCount, clearModelHealth, getModelHealth,
@@ -243,6 +253,80 @@ function run(responses) {
 // 8. retryable classification
 check('capacity_exhausted is retryable', isRetryableModelError('capacity_exhausted (HTTP 503)'));
 check('switching limit is not retryable', !isRetryableModelError('model_switching_limit_exceeded'));
+
+// 9. cancelling mid-stream stops the completion instead of finishing it
+{
+  const controller = new AbortController();
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push(JSON.parse(init.body).model);
+    return new Response(
+      new ReadableStream({
+        start(stream) {
+          const enc = new TextEncoder();
+          stream.enqueue(
+            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial ' } }] })}\n\n`),
+          );
+          // a real fetch cancels the body when its signal aborts; emulate that for the reader
+          init.signal?.addEventListener('abort', () => stream.error(new DOMException('Aborted', 'AbortError')));
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    );
+  };
+
+  const events = [];
+  await new Promise((resolve) => {
+    chatCompletion(
+      'xortron/RESTRICTED-RESEARCH-MODEL',
+      [{ role: 'user', content: 'x' }],
+      {
+        onToken: (token) => {
+          events.push(`token:${token}`);
+          controller.abort();
+        },
+        onDone: (full) => { events.push(`done:${full}`); resolve(); },
+        onError: (error) => { events.push(`error:${error}`); resolve(); },
+        onAbort: (partial) => { events.push(`abort:${partial}`); resolve(); },
+      },
+      undefined,
+      ['xortron/other'],
+      controller.signal,
+    );
+  });
+
+  check('cancel fires onAbort, not onDone', events.some((event) => event.startsWith('abort:')), events.join(' | '));
+  check('cancel keeps the text that already streamed', events.some((event) => event === 'abort:partial '), events.join(' | '));
+  check('cancel does not fall back to another model', calls.length === 1, calls.join(' -> '));
+  check('cancel is not reported as an error', !events.some((event) => event.startsWith('error:')));
+}
+
+// 10. a signal aborted before the request makes no model call at all
+{
+  const controller = new AbortController();
+  controller.abort();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return sse('never requested');
+  };
+  const events = [];
+  await chatCompletion(
+    'xortron/RESTRICTED-RESEARCH-MODEL',
+    [{ role: 'user', content: 'x' }],
+    {
+      onToken: (token) => events.push(`token:${token}`),
+      onDone: (full) => events.push(`done:${full}`),
+      onError: (error) => events.push(`error:${error}`),
+      onAbort: (partial) => events.push(`abort:${partial}`),
+    },
+    undefined,
+    ['xortron/other'],
+    controller.signal,
+  );
+  check('already-cancelled signal makes no request', calls === 0, String(calls));
+  check('already-cancelled signal reports an abort', events.length === 1 && events[0] === 'abort:', events.join(' | '));
+}
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);

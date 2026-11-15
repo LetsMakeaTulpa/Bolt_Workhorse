@@ -25,6 +25,8 @@ interface ChatAreaProps {
   onEnginesChange: (engines: string[]) => void;
   useDorks: boolean;
   onUseDorksChange: (value: boolean) => void;
+  /** stop the running search, keeping whatever it has already collected */
+  onCancelSearch?: () => void;
   onRetrySearch?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
@@ -48,6 +50,7 @@ export function ChatArea({
   onEnginesChange,
   useDorks,
   onUseDorksChange,
+  onCancelSearch,
   onRetrySearch,
   onSaveResults,
   onFollowUp,
@@ -97,6 +100,7 @@ export function ChatArea({
             onUseDorksChange={onUseDorksChange}
             disabled={isStreaming}
             searching={isSearching}
+            onCancel={onCancelSearch}
           />
           {engineIssues && engineIssues.length > 0 && (
             <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">

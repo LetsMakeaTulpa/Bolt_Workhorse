@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, ChevronDown, Check, Loader2, Globe, SlidersHorizontal } from 'lucide-react';
+import { Search, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square } from 'lucide-react';
 import { DORK_ENGINE_NOTE, DORK_OPERATORS, DORK_TEMPLATES } from '../lib/dorks';
 import { ENGINE_CATALOG, ENGINE_GROUPS, SEARCH_SCOPES, matchScope } from '../lib/engines';
 
@@ -25,6 +25,8 @@ interface SearchBarProps {
   disabled: boolean;
   /** a search is running; the box stays usable so a new query can replace it */
   searching?: boolean;
+  /** stop the running search without starting another one */
+  onCancel?: () => void;
 }
 
 export function SearchBar({
@@ -38,6 +40,7 @@ export function SearchBar({
   onRawOnlyChange,
   disabled,
   searching = false,
+  onCancel,
 }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -131,6 +134,18 @@ export function SearchBar({
           <kbd className="hidden flex-shrink-0 rounded border border-border-subtle px-1.5 py-0.5 font-mono text-[10px] text-text-muted sm:block">
             /
           </kbd>
+        )}
+        {searching && onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            title="Stop the running search — results already collected stay in the panel"
+            aria-label="Stop search"
+            className="flex flex-shrink-0 items-center gap-1.5 rounded-xl border border-warning/40 bg-warning-subtle px-3 py-2 text-xs font-semibold text-warning transition-colors hover:border-warning/70"
+          >
+            <Square size={11} strokeWidth={3} />
+            <span>Stop</span>
+          </button>
         )}
         <button
           onClick={submit}

@@ -310,7 +310,17 @@ export default function App() {
       return result.results;
     } catch (err) {
       // an aborted run is not a failure: the search that replaced it owns the status line
-      if (controller.signal.aborted || !isCurrent()) return [];
+      if (controller.signal.aborted || !isCurrent()) {
+        // ...but the row belongs to this run, so a user cancel has to close it itself
+        if (controller.signal.aborted && isCurrent() && searchLog?.id) {
+          const description = 'Search cancelled';
+          setActivityLogs((prev) =>
+            prev.map((entry) => (entry.id === searchLog.id ? { ...entry, status: 'completed', description } : entry)),
+          );
+          void supabase.from('activity_logs').update({ status: 'completed', description }).eq('id', searchLog.id);
+        }
+        return [];
+      }
       console.error('Search error:', err);
       setSearchResults([]);
       await logActivity(convId, 'search', `Search failed: ${err instanceof Error ? err.message : 'unknown'}`, {}, 'failed');
@@ -327,6 +337,18 @@ export default function App() {
         void supabase.from('activity_logs').update({ status: 'completed', description }).eq('id', searchLog.id);
       }
     }
+  };
+
+  /**
+   * Stop the run in flight without starting another one. The results already streamed in stay on
+   * screen: the abort only stops engines that have not answered yet.
+   */
+  const cancelSearch = () => {
+    const running = searchRunRef.current;
+    if (!running || running.signal.aborted) return;
+    running.abort();
+    setSearchStatus('Search cancelled');
+    setIsSearching(false);
   };
 
   /**
@@ -790,6 +812,7 @@ Each question must be answerable by a search. Nothing may follow that section. K
               presetName={selectedPreset}
               onSearch={handleSearch}
               onRunLane={handleRunLane}
+              onCancelSearch={cancelSearch}
               searchLabel={searchStatus}
               engineIssues={engineIssues}
               rawOnly={rawSearchOnly}

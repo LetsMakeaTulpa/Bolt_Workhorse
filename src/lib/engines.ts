@@ -151,6 +151,9 @@ export const ENGINE_LABELS = new Map(ENGINE_CATALOG.map((engine) => [engine.id, 
 
 const FAILURE_STATUSES = new Set(['missing_key', 'error', 'unknown_engine']);
 
+/** The engine answered, but only after the caller's own key was refused. */
+export const KEY_FALLBACK_STATUS = 'key_fallback';
+
 /** Short phrase for a reported status, e.g. `missing_key` → `missing key`. */
 export function engineIssueLabel(status: string): string {
   switch (status) {
@@ -162,6 +165,8 @@ export function engineIssueLabel(status: string): string {
       return 'not available';
     case 'empty':
       return 'no results';
+    case 'key_fallback':
+      return 'your key rejected';
     default:
       return status || 'unknown';
   }

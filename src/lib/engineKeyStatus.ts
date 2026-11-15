@@ -14,6 +14,7 @@ export type KeyState =
   | 'ready' // every required name stored by this account
   | 'partial' // some stored (Google needs both a key and a CSE id)
   | 'unused' // all stored, yet the function still reported missing_key
+  | 'rejected' // stored, but the provider refused it and the deployment key answered
   | 'missing' // the function reported missing_key and nothing is stored
   | 'optional' // works anonymously; a key only raises a limit
   | 'unknown'; // nothing stored, no failure seen — the deployment may supply it
@@ -49,12 +50,21 @@ export function engineKeyStatus(
   const kept = required.filter((name) => stored.has(name));
   const missing = required.filter((name) => !stored.has(name));
   const failedKey = issues.some((issue) => issue.engine === engineId && issue.status === 'missing_key');
+  const rejectedKey = issues.some((issue) => issue.engine === engineId && issue.status === 'key_fallback');
   const base = { engine: engineId, label: def.label, required, stored: kept };
 
   if (required.length === 0) {
     return { ...base, state: 'keyless', text: 'keyless', detail: 'No key required — this engine calls an open API.' };
   }
   if (missing.length === 0) {
+    if (rejectedKey) {
+      return {
+        ...base,
+        state: 'rejected',
+        text: 'rejected',
+        detail: `The provider refused your ${required.join(' + ')} on the last run, which carried on with the deployment's own key. Replace the key in Settings.`,
+      };
+    }
     if (failedKey) {
       return {
         ...base,

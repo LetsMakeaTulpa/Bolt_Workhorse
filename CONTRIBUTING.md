@@ -114,7 +114,10 @@ query.
   `GOOGLE_CSE_ID`, `SEARXNG_URL`, `FIRECRAWL_API_KEY`, `SHODAN_API_KEY`, `URLSCAN_API_KEY`,
   `GREPAPP_BASE_URL` and `GREPAPP_COOKIE`.
 - Per-user keys are entered in Settings → provider keys and stored per account in
-  `user_engine_keys`; the function prefers the caller's row over its own env secret.
+  `user_engine_keys`; the function prefers the caller's row over its own env secret. If the provider
+  rejects that row (401/403), the engine is retried once on the deployment's secret and reports
+  `key_fallback` rather than failing — a stale personal key must not break a working deployment,
+  and it must not disappear silently either.
 - `.env` holds only `VITE_`-prefixed public values. `keys.txt`, `keys*.txt` and `.env.functions` are
   gitignored because the importer writes key material into them. Keep them off any branch.
 - `.env` is currently tracked in this repo with the Supabase URL and anon key only. Do not add

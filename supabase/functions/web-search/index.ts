@@ -449,6 +449,51 @@ const ENGINE_KEY_ENV: Record<string, string[]> = {
   searxng: ['SEARXNG_URL'],
 };
 
+/**
+ * A provider refusing the credential (401/403, or wording to that effect) rather than the request.
+ * Kept narrow on purpose: a 429 or a 5xx says nothing about the key, and retrying those on a
+ * different credential would just spend the owner's quota on the same failure.
+ */
+export function isKeyRejection(message: string): boolean {
+  return /\b(?:http\s*)?(?:401|403)\b|unauthori[sz]ed|forbidden|invalid\s+(?:api\s*)?key|api[\s_-]*key\s+(?:is\s+)?(?:invalid|expired|revoked)|incorrect\s+api[\s_-]*key/i.test(
+    message,
+  );
+}
+
+/**
+ * Run one engine, and when the caller's own key is rejected, try again on the function's secret.
+ *
+ * Per-user keys exist so someone can bring their own quota; an expired key they pasted months ago
+ * should not turn a working deployment into an error, and equally should not be silently ignored —
+ * the returned detail says the personal key was refused so the composer can show it.
+ */
+export async function searchWithKeyFallback(
+  engine: SearchEngine,
+  query: string,
+  maxResults: number,
+  keys: EngineKeys | undefined,
+  keyNames: string[] = [],
+  onFallback?: (detail: string) => void,
+): Promise<SearchResult[]> {
+  try {
+    return await engine.search(query, maxResults, keys);
+  } catch (err) {
+    const message = String((err as Error)?.message ?? err);
+    // only a key this request actually supplied can be retried on a different one
+    const rejected = keyNames.find((name) => Boolean(keys?.[name]));
+    if (!rejected || !isKeyRejection(message)) throw err;
+
+    try {
+      // an empty map forces `secret()` to read the function environment
+      const results = await engine.search(query, maxResults, {});
+      onFallback?.(`your ${rejected} was rejected (${message}); used the function's own key`);
+      return results;
+    } catch (second) {
+      throw new Error(`${message}; fallback key also failed: ${String((second as Error)?.message ?? second)}`);
+    }
+  }
+}
+
 const ENGINES: Record<string, SearchEngine> = {
   duckduckgo: duckDuckGoEngine,
   wikipedia: wikipediaEngine,
@@ -695,7 +740,9 @@ export async function handleRequest(req: Request): Promise<Response> {
     // response instead of guessing between a missing secret, a rejected key and a quiet query.
     type EngineReport = { engine: string; status: string; results: number; detail?: string };
     const reports = new Map<string, EngineReport>();
-    const SEVERITY: Record<string, number> = { ok: 0, empty: 1, error: 2, missing_key: 3, unknown_engine: 3 };
+    // key_fallback ranks above a plain ok so a rejected personal key is not overwritten by the
+    // second query succeeding quietly
+    const SEVERITY: Record<string, number> = { ok: 0, empty: 1, key_fallback: 1.5, error: 2, missing_key: 3, unknown_engine: 3 };
     const note = (engineName: string, status: string, count = 0, detail?: string) => {
       const prev = reports.get(engineName);
       const keepPrev = prev && (SEVERITY[prev.status] ?? 0) > (SEVERITY[status] ?? 0);
@@ -724,9 +771,14 @@ export async function handleRequest(req: Request): Promise<Response> {
       // For each engine, search with the primary query (and one expansion if compiled)
       const queriesForEngine = queries.slice(0, 2);
       for (const q of queriesForEngine) {
+        // a rejected personal key degrades to the deployment's own secret instead of failing
+        let fallbackDetail = '';
         searchPromises.push(
-          engine.search(q, maxResultsPerEngine, userKeys).then((results) => {
-            note(engineName, results.length > 0 ? 'ok' : 'empty', results.length);
+          searchWithKeyFallback(engine, q, maxResultsPerEngine, userKeys, required ?? [], (detail) => {
+            fallbackDetail = detail;
+          }).then((results) => {
+            const status = fallbackDetail ? 'key_fallback' : results.length > 0 ? 'ok' : 'empty';
+            note(engineName, status, results.length, fallbackDetail || undefined);
             allEngineResults.push({ engine: engineName, results });
           }).catch((err) => {
             note(engineName, 'error', 0, String(err?.message ?? err).slice(0, 120));

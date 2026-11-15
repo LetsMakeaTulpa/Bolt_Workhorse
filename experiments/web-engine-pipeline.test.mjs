@@ -3,6 +3,7 @@
 // Run: node experiments/web-engine-pipeline.test.mjs
 
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -10,16 +11,21 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const STUB = `${process.cwd()}/experiments/fixtures/supabase-stub.mjs`;
+// forward slashes so this bundle call also works when spawned through cmd.exe on Windows
+const STUB = `${process.cwd()}/experiments/fixtures/supabase-stub.mjs`.replaceAll('\\', '/');
+const OUT = (process.env.PIPELINE_MODULE ?? '/tmp/web-search-pipeline.mjs').replaceAll('\\', '/');
+const WINDOWS = process.platform === 'win32';
 
 execFileSync(
-  'npx',
+  WINDOWS ? 'npx.cmd' : 'npx',
   [
     '--yes', 'esbuild', 'supabase/functions/web-search/index.ts',
-    '--bundle', '--format=esm', '--outfile=/tmp/web-search-pipeline.mjs',
-    '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB, `--external:${STUB}`, '--log-level=error',
+    '--bundle', '--format=esm', `--outfile=${OUT}`,
+    // the stub is self-contained, so bundling it in keeps the artifact loadable by path on any OS
+    '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB, '--log-level=error',
   ],
-  { stdio: 'inherit' },
+  // cmd.exe cannot spawn a .cmd without a shell
+  { stdio: 'inherit', shell: WINDOWS },
 );
 
 // ── Deno stand-in ─────────────────────────────────────────────────────────────
@@ -29,7 +35,7 @@ globalThis.Deno = {
   serve: () => {},
 };
 
-const { handleRequest } = await import('/tmp/web-search-pipeline.mjs');
+const { handleRequest, isKeyRejection, searchWithKeyFallback } = await import(pathToFileURL(OUT).href);
 
 // ── fixture upstreams, shaped like the real APIs ──────────────────────────────
 const EXA_PAYLOAD = {
@@ -139,6 +145,60 @@ check('one failing engine does not empty the response', rejected.total_results >
 // ── 4. an unknown engine name is not silently dropped ───────────────────────
 const unknown = await (await search({ query: 'graph neural network survey', engines: ['nope'] })).json();
 check('an unknown engine is reported', unknown.engine_status?.[0]?.status === 'unknown_engine', JSON.stringify(unknown.engine_status?.[0]));
+
+// ── 5. a rejected personal key falls back to the function's own ─────────────
+{
+  const attempts = [];
+  const engine = {
+    name: 'exa',
+    capabilities: ['general'],
+    async search(_query, _max, keys) {
+      attempts.push(keys ?? null);
+      if (keys && keys.EXA_API_KEY) throw new Error('exa http 401');
+      return [{ title: 'from deployment key', url: 'https://example.test/a', snippet: 'ok', source_engine: 'exa' }];
+    },
+  };
+
+  let detail = '';
+  const recovered = await searchWithKeyFallback(
+    engine, 'q', 5, { EXA_API_KEY: 'user-key' }, ['EXA_API_KEY'], (message) => { detail = message; },
+  );
+  check('a rejected personal key still returns results', recovered.length === 1, `${recovered.length} results`);
+  check('fallback retries once, without the personal key',
+    attempts.length === 2 && attempts[0]?.EXA_API_KEY === 'user-key' && Object.keys(attempts[1] ?? {}).length === 0,
+    JSON.stringify(attempts));
+  check('fallback explains which key failed', /EXA_API_KEY/.test(detail) && /401/.test(detail), detail);
+
+  // with no personal key there is nothing to fall back from: the error stands
+  let unretried = '';
+  const envOnly = { name: 'exa', capabilities: [], async search() { throw new Error('exa http 401'); } };
+  try { await searchWithKeyFallback(envOnly, 'q', 5, {}, ['EXA_API_KEY']); } catch (err) { unretried = err.message; }
+  check('no personal key means no second attempt', unretried === 'exa http 401', unretried);
+
+  // a provider outage is not a key problem
+  let outageAttempts = 0;
+  const flaky = { name: 'exa', capabilities: [], async search() { outageAttempts += 1; throw new Error('exa http 503'); } };
+  try { await searchWithKeyFallback(flaky, 'q', 5, { EXA_API_KEY: 'k' }, ['EXA_API_KEY']); } catch { /* expected */ }
+  check('a 5xx is not retried on the deployment key', outageAttempts === 1, String(outageAttempts));
+
+  // both keys refused: report the original cause and the fallback's
+  const doubleBad = {
+    name: 'exa',
+    capabilities: [],
+    async search(_q, _m, keys) { throw new Error(keys && keys.EXA_API_KEY ? 'exa http 401' : 'exa http 403'); },
+  };
+  let doubled = '';
+  try { await searchWithKeyFallback(doubleBad, 'q', 5, { EXA_API_KEY: 'k' }, ['EXA_API_KEY']); } catch (err) { doubled = err.message; }
+  check('a refused fallback reports both failures', /401/.test(doubled) && /403/.test(doubled), doubled);
+}
+
+// ── 6. what counts as a rejected key ────────────────────────────────────────
+check('401 is a key rejection', isKeyRejection('exa http 401'));
+check('403 is a key rejection', isKeyRejection('tavily http 403'));
+check('provider wording counts too', isKeyRejection('{"error":"invalid api key"}'));
+check('a 500 is not a key rejection', !isKeyRejection('exa http 500'));
+check('a timeout is not a key rejection', !isKeyRejection('The operation was aborted'));
+check('an empty result is not a rejection', !isKeyRejection('no results'));
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);

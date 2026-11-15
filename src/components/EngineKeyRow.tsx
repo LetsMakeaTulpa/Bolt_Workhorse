@@ -14,6 +14,7 @@ const TONE: Record<KeyState, string> = {
   unknown: 'border-border-subtle text-text-secondary',
   partial: 'border-warning/40 bg-warning-subtle text-warning',
   missing: 'border-warning/40 bg-warning-subtle text-warning',
+  rejected: 'border-warning/40 bg-warning-subtle text-warning',
   unused: 'border-accent/40 bg-accent-subtle text-accent',
 };
 
@@ -24,6 +25,7 @@ const DOT: Record<KeyState, string> = {
   unknown: 'bg-text-muted/70',
   partial: 'bg-warning',
   missing: 'bg-warning',
+  rejected: 'bg-warning',
   unused: 'bg-accent',
 };
 
@@ -47,7 +49,8 @@ export function EngineKeyRow({ engines, storedKeys, issues = [], unavailable = f
     (status) =>
       status.state === 'missing' ||
       status.state === 'partial' ||
-      status.state === 'unused',
+      status.state === 'unused' ||
+      status.state === 'rejected',
   );
 
   return (

@@ -39,7 +39,10 @@ CREATE POLICY "anon_update_config" ON app_config FOR UPDATE TO anon, authenticat
 DROP POLICY IF EXISTS "anon_delete_config" ON app_config;
 CREATE POLICY "anon_delete_config" ON app_config FOR DELETE TO anon, authenticated USING (true);
 
--- Insert the default row with the provided API key
+-- Seed the row without a key: secrets never belong in migration files.
+-- Set the key server-side once the schema exists, e.g. from the Supabase SQL editor:
+--   UPDATE app_config SET featherless_api_key = '<key from featherless.ai>' WHERE id = 1;
+-- DO NOTHING on re-run so a rotated key is never clobbered by replaying migrations.
 INSERT INTO app_config (id, featherless_api_key, default_model)
-VALUES (1, 'rc_3b23e31edc21eecb510413debce5129d2dcf14d2efaaf79a1edb0e56bbedd42d', 'Qwen/Qwen2.5-7B-Instruct')
-ON CONFLICT (id) DO UPDATE SET featherless_api_key = EXCLUDED.featherless_api_key;
+VALUES (1, '', 'Qwen/Qwen2.5-7B-Instruct')
+ON CONFLICT (id) DO NOTHING;

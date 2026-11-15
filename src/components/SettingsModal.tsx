@@ -1,6 +1,8 @@
 import { ResearchPreset } from '../types';
 import { supabase } from '../lib/supabase';
-import { X, Layers, Cpu, Globe, Shield, Key, Check, AlertCircle } from 'lucide-react';
+import { clearModelHealth, modelHealthCount } from '../lib/api';
+import { PROVIDER_KEYS, describeKeys, parseProviderKeys } from '../lib/providerKeys';
+import { X, Layers, Cpu, Globe, Shield, Key, RotateCcw, Loader2, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 interface SettingsModalProps {
@@ -8,6 +10,8 @@ interface SettingsModalProps {
   selectedPreset: string;
   onSelectPreset: (preset: string) => void;
   onClose: () => void;
+  /** signed-in account; provider keys are stored per user */
+  userId?: string;
 }
 
 const ENGINE_DESCRIPTIONS: Record<string, string> = {
@@ -19,47 +23,88 @@ const ENGINE_DESCRIPTIONS: Record<string, string> = {
   openalex: 'Scholarly works and research metadata',
 };
 
-export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose }: SettingsModalProps) {
+export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose, userId }: SettingsModalProps) {
   const current = presets.find((p) => p.name === selectedPreset);
-  const [apiKey, setApiKey] = useState('');
-  const [keySaved, setKeySaved] = useState(false);
-  const [keyError, setKeyError] = useState('');
-  const [keyConfigured, setKeyConfigured] = useState(false);
+  const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null);
+  const [defaultModel, setDefaultModel] = useState('');
+  const [healthCount, setHealthCount] = useState(0);
+  const [healthCleared, setHealthCleared] = useState(false);
+  const [keyText, setKeyText] = useState('');
+  const [savingKeys, setSavingKeys] = useState(false);
+  const [storedKeys, setStoredKeys] = useState<string[]>([]);
+  const [keyMessage, setKeyMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+
+  const loadStoredKeys = async () => {
+    if (!userId) return;
+    const { data } = await supabase.from('user_engine_keys').select('name');
+    setStoredKeys((data ?? []).map((row) => row.name as string));
+  };
 
   useEffect(() => {
-    supabase.from('app_config').select('featherless_api_key').eq('id', 1).maybeSingle()
-      .then(({ data }) => {
-        if (data?.featherless_api_key) {
-          setKeyConfigured(true);
-          setApiKey(data.featherless_api_key);
-        }
-      });
-  }, []);
+    void loadStoredKeys();
+  }, [userId]);
 
-  const handleSaveKey = async () => {
-    setKeyError('');
-    if (!apiKey.trim()) {
-      setKeyError('API key cannot be empty');
+  const handleSaveKeys = async () => {
+    const { keys, rejected, invalid } = parseProviderKeys(keyText);
+    if (!userId) {
+      setKeyMessage({ tone: 'error', text: 'Sign in before adding provider keys.' });
       return;
     }
-    const { error } = await supabase
-      .from('app_config')
-      .upsert({ id: 1, featherless_api_key: apiKey.trim() });
+    if (keys.length === 0) {
+      const parts = [
+        rejected.length ? `not read by this app: ${rejected.join(', ')}` : '',
+        invalid.length ? `unusable line: ${invalid.join(', ')}` : '',
+      ].filter(Boolean);
+      setKeyMessage({ tone: 'error', text: parts.join(' · ') || 'Nothing to save — use NAME=value lines.' });
+      return;
+    }
+
+    setSavingKeys(true);
+    const rows = keys.map((key) => ({ user_id: userId, name: key.name, value: key.value, updated_at: new Date().toISOString() }));
+    const { error } = await supabase.from('user_engine_keys').upsert(rows, { onConflict: 'user_id,name' });
+    setSavingKeys(false);
 
     if (error) {
-      // Row might not exist yet — try insert
-      const { error: insertError } = await supabase
-        .from('app_config')
-        .insert({ id: 1, featherless_api_key: apiKey.trim() });
-      if (insertError) {
-        setKeyError(insertError.message);
-        return;
-      }
+      setKeyMessage({
+        tone: 'error',
+        text: /relation .*does not exist|user_engine_keys/i.test(error.message)
+          ? 'The keys table is not in this project yet — apply migration 20261115160000_user_engine_keys.sql.'
+          : error.message,
+      });
+      return;
     }
-    setKeySaved(true);
-    setKeyConfigured(true);
-    setTimeout(() => setKeySaved(false), 2000);
+
+    setKeyText('');
+    await loadStoredKeys();
+    const note = rejected.length ? ` (skipped ${rejected.join(', ')})` : '';
+    setKeyMessage({ tone: 'ok', text: `Saved ${describeKeys(keys)}${note}` });
   };
+
+  useEffect(() => setHealthCount(modelHealthCount()), []);
+
+  const handleResetHealth = () => {
+    clearModelHealth();
+    setHealthCount(0);
+    setHealthCleared(true);
+    setTimeout(() => setHealthCleared(false), 2500);
+  };
+
+  // app_config itself is service-role only; the browser sees the keyless public view
+  useEffect(() => {
+    supabase
+      .from('app_config_public')
+      .select('has_api_key, default_model')
+      .eq('id', 1)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error) {
+          setKeyConfigured(null);
+          return;
+        }
+        setKeyConfigured(Boolean(data?.has_api_key));
+        setDefaultModel(data?.default_model ?? '');
+      });
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
@@ -84,35 +129,83 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
               <div className="flex items-center gap-2 mb-2">
                 <Key size={14} className={keyConfigured ? 'text-olive' : 'text-warning'} />
                 <span className="text-xs font-medium text-text-primary">
-                  {keyConfigured ? 'API key configured' : 'API key required'}
+                  {keyConfigured === null
+                    ? 'API key status unavailable'
+                    : keyConfigured
+                      ? 'API key configured (server-side)'
+                      : 'No API key configured'}
                 </span>
               </div>
-              <p className="text-[11px] text-text-muted mb-2.5">
-                Enter your Featherless.ai API key to power AI chat and search. Get a key from the Featherless dashboard. The key is stored securely in the database and used server-side only.
+              <p className="text-[11px] text-text-muted">
+                The Featherless key lives in <span className="font-mono text-text-secondary">app_config</span>, which only the
+                service role can read or write. Set it from the Supabase dashboard (SQL editor) or the CLI — it is never
+                sent to the browser, and it can no longer be entered or read here.
               </p>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => { setApiKey(e.target.value); setKeySaved(false); }}
-                  placeholder="rc_..."
-                  className="flex-1 rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent/40 font-mono"
-                />
-                <button
-                  onClick={handleSaveKey}
-                  className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
-                    keySaved ? 'bg-olive text-bg-base' : 'bg-accent text-bg-base hover:bg-accent-hover'
-                  }`}
-                >
-                  {keySaved ? <><Check size={13} /> Saved</> : 'Save Key'}
-                </button>
-              </div>
-              {keyError && (
-                <div className="mt-2 flex items-center gap-1.5 text-[11px] text-error">
-                  <AlertCircle size={12} />
-                  <span>{keyError}</span>
-                </div>
+              {defaultModel && (
+                <p className="mt-1.5 text-[11px] text-text-muted">
+                  Default model: <span className="font-mono text-text-secondary">{defaultModel}</span>
+                </p>
               )}
+            </div>
+          </div>
+
+          {/* Provider keys — stored per account, read by the search function per request */}
+          <div>
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Search provider keys
+            </label>
+            <div className="rounded-lg border border-border-subtle bg-bg-elevated p-3">
+              <p className="mb-2 text-[11px] text-text-muted">
+                Paste any of these, one per line, and they are stored against your account — no terminal, no
+                deploy per key. Your keys are used before the deployment's own, and only for your searches.
+              </p>
+              <textarea
+                value={keyText}
+                onChange={(event) => setKeyText(event.target.value)}
+                placeholder={'EXA_API_KEY=…\nTAVILY_API_KEY=…\nGOOGLE_API_KEY=…\nGOOGLE_CSE_ID=…'}
+                spellCheck={false}
+                rows={3}
+                className="w-full resize-y rounded-lg border border-border-subtle bg-bg-base px-2.5 py-2 font-mono text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent/40"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleSaveKeys}
+                  disabled={savingKeys || !keyText.trim()}
+                  className="flex items-center gap-1.5 rounded-lg bg-olive px-2.5 py-1.5 text-[11px] font-semibold text-bg-deep transition-colors hover:bg-olive-hover disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {savingKeys ? <Loader2 size={12} className="animate-spin" /> : <Key size={12} />}
+                  Save keys
+                </button>
+                {keyMessage && (
+                  <span className={`text-[11px] ${keyMessage.tone === 'ok' ? 'text-olive' : 'text-error'}`}>
+                    {keyMessage.text}
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2.5 flex flex-wrap gap-1 border-t border-border-subtle pt-2">
+                {PROVIDER_KEYS.map((provider) => {
+                  const stored = storedKeys.includes(provider.name);
+                  return (
+                    <span
+                      key={provider.name}
+                      title={`${provider.name} — ${provider.hint}`}
+                      className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+                        stored
+                          ? 'border-olive/30 bg-olive-subtle text-olive'
+                          : 'border-border-subtle text-text-muted'
+                      }`}
+                    >
+                      {stored && <Check size={9} />}
+                      {provider.label}
+                    </span>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[10px] text-text-muted">
+                If an engine still reports a missing key after saving, the search function in this project is
+                an older build — redeploy it once and it will read these rows.
+              </p>
             </div>
           </div>
 
@@ -185,6 +278,36 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
               </div>
             </div>
           )}
+
+          {/* Model Reliability */}
+          <div>
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Model Reliability
+            </label>
+            <div className="rounded-lg border border-border-subtle bg-bg-elevated p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-text-primary">
+                    {healthCount === 0
+                      ? 'No reliability history'
+                      : `${healthCount} model${healthCount === 1 ? '' : 's'} tracked`}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-text-muted">
+                    Learned from live completions: a model that answered moves to the front of the fallback chain, one
+                    that hit capacity moves back. Reset to forget that history.
+                  </p>
+                </div>
+                <button
+                  onClick={handleResetHealth}
+                  disabled={healthCount === 0}
+                  className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 py-1.5 text-[11px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RotateCcw size={12} />
+                  {healthCleared ? 'Cleared' : 'Reset'}
+                </button>
+              </div>
+            </div>
+          </div>
 
           {/* Provider Info */}
           <div className="rounded-lg border border-border-subtle bg-bg-elevated p-3">

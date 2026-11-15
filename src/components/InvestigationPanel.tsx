@@ -1,5 +1,9 @@
 import { Source, Finding, ActivityLog, SourceRecord } from '../types';
-import { Search, ExternalLink, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight } from 'lucide-react';
+import { queryIntent } from '../lib/fusion';
+import { describeIntent, freshnessBonus } from '../lib/rankExplain';
+import { Search, ExternalLink, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar } from 'lucide-react';
+import { SearchMap } from './SearchMap';
+import type { LucideIcon } from 'lucide-react';
 import { useState } from 'react';
 
 interface InvestigationPanelProps {
@@ -10,9 +14,14 @@ interface InvestigationPanelProps {
   onRetrySearch: (query: string) => void;
   activityLogs: ActivityLog[];
   sources: SourceRecord[];
+  /** query behind the current results, used to explain the ranking */
+  query?: string;
+  tab: PanelTab;
+  onTabChange: (tab: PanelTab) => void;
+  onCollapse: () => void;
 }
 
-type Tab = 'activity' | 'sources' | 'evidence';
+export type PanelTab = 'map' | 'activity' | 'sources' | 'evidence';
 
 export function InvestigationPanel({
   searchResults,
@@ -22,20 +31,34 @@ export function InvestigationPanel({
   onRetrySearch,
   activityLogs,
   sources,
+  query,
+  tab,
+  onTabChange,
+  onCollapse,
 }: InvestigationPanelProps) {
-  const [tab, setTab] = useState<Tab>('activity');
-
   return (
     <aside className="flex w-80 flex-col border-l border-border-subtle bg-bg-deep">
-      <div className="flex border-b border-border-subtle">
-        <TabButton active={tab === 'activity'} onClick={() => setTab('activity')} icon={Activity} label="Activity" count={activityLogs.length} />
-        <TabButton active={tab === 'sources'} onClick={() => setTab('sources')} icon={Globe} label="Sources" count={sources.length} />
-        <TabButton active={tab === 'evidence'} onClick={() => setTab('evidence')} icon={Shield} label="Findings" count={findings.length} />
+      <div className="flex items-center border-b border-border-subtle">
+        <TabButton active={tab === 'map'} onClick={() => onTabChange('map')} icon={Radar} label="Map" count={searchResults.length} />
+        <TabButton active={tab === 'activity'} onClick={() => onTabChange('activity')} icon={Activity} label="Activity" count={activityLogs.length} />
+        <TabButton active={tab === 'sources'} onClick={() => onTabChange('sources')} icon={Globe} label="Sources" count={sources.length} />
+        <TabButton active={tab === 'evidence'} onClick={() => onTabChange('evidence')} icon={Shield} label="Findings" count={findings.length} />
+        <button
+          onClick={onCollapse}
+          className="px-2 self-stretch text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+          title="Collapse panel"
+          aria-label="Collapse panel"
+        >
+          <PanelRightClose size={14} />
+        </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className={`flex-1 overflow-y-auto ${tab === 'map' ? '' : 'p-3'}`}>
+        {tab === 'map' && <SearchMap results={searchResults} isSearching={isSearching} />}
         {tab === 'activity' && <ActivityTab logs={activityLogs} isSearching={isSearching} />}
-        {tab === 'sources' && <SourcesTab results={searchResults} sources={sources} isSearching={isSearching} />}
+        {tab === 'sources' && (
+          <SourcesTab results={searchResults} sources={sources} isSearching={isSearching} query={query} />
+        )}
         {tab === 'evidence' && <FindingsTab findings={findings} onUpdateStatus={onUpdateFindingStatus} onRetrySearch={onRetrySearch} />}
       </div>
     </aside>
@@ -68,7 +91,7 @@ function ActivityTab({ logs, isSearching }: { logs: ActivityLog[]; isSearching: 
     );
   }
 
-  const iconForType: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
+  const iconForType: Record<string, LucideIcon> = {
     search: Search, analyze: Activity, synthesize: FileText, plan: Activity,
     followup: ChevronRight, compile: FileText, rank: Globe, deduplicate: Globe,
   };
@@ -106,7 +129,29 @@ function ActivityTab({ logs, isSearching }: { logs: ActivityLog[]; isSearching: 
   );
 }
 
-function SourcesTab({ results, sources, isSearching }: { results: Source[]; sources: SourceRecord[]; isSearching: boolean }) {
+interface CardSource {
+  title: string;
+  url: string;
+  snippet: string;
+  source_engine: string;
+  citation_id?: string;
+  relevance_score?: number;
+  published?: string;
+  /** the query this source answered, kept per row so a reloaded list still explains itself */
+  query?: string;
+}
+
+function SourcesTab({
+  results,
+  sources,
+  isSearching,
+  query,
+}: {
+  results: Source[];
+  sources: SourceRecord[];
+  isSearching: boolean;
+  query?: string;
+}) {
   if (isSearching) {
     return (
       <div className="flex flex-col items-center justify-center py-10">
@@ -116,9 +161,18 @@ function SourcesTab({ results, sources, isSearching }: { results: Source[]; sour
     );
   }
 
-  const displaySources = sources.length > 0
-    ? sources.map((s) => ({ title: s.title, url: s.url, snippet: s.snippet, source_engine: s.provider, citation_id: s.citation_id, relevance_score: s.relevance_score }))
-    : results;
+  const displaySources: CardSource[] = sources.length > 0
+    ? sources.map((s) => ({
+        title: s.title,
+        url: s.url,
+        snippet: s.snippet,
+        source_engine: s.provider,
+        citation_id: s.citation_id,
+        relevance_score: s.relevance_score,
+        published: s.publication_date || undefined,
+        query: s.original_query || query,
+      }))
+    : results.map((r) => ({ ...r, citation_id: r.citation_id ?? '', relevance_score: r.relevance_score ?? 0, query }));
 
   if (displaySources.length === 0) {
     return (
@@ -138,13 +192,23 @@ function SourcesTab({ results, sources, isSearching }: { results: Source[]; sour
     grouped[engine].push(s);
   }
 
+  const intent = describeIntent(queryIntent(query || displaySources[0]?.query || ''));
+
   return (
     <div className="space-y-3">
+      <div className="rounded-lg border border-border-subtle bg-bg-surface px-2.5 py-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Ranking</span>
+          <span className="rounded bg-bg-hover px-1.5 text-[10px] text-text-primary">{intent.label}</span>
+        </div>
+        <p className="mt-0.5 text-[9px] leading-tight text-text-muted">{intent.detail}</p>
+      </div>
+      <EngineSummary results={displaySources} />
       {Object.entries(grouped).map(([engine, items]) => (
         <div key={engine}>
           <div className="mb-1.5 flex items-center gap-1.5">
             <Globe size={10} className="text-olive" />
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">{engine}</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">{engine.split('+').join(' + ')}</span>
             <span className="text-[10px] text-text-muted">({items.length})</span>
           </div>
           <div className="space-y-1.5">
@@ -158,12 +222,71 @@ function SourcesTab({ results, sources, isSearching }: { results: Source[]; sour
   );
 }
 
-function SourceCard({ source }: { source: Source | SourceRecord }) {
-  const url = 'url' in source ? source.url : '';
-  const title = 'title' in source ? source.title : '';
-  const snippet = 'snippet' in source ? source.snippet : '';
-  const citationId = 'citation_id' in source ? source.citation_id : '';
-  const score = 'relevance_score' in source ? source.relevance_score : undefined;
+interface EngineContribution {
+  engine: string;
+  count: number;
+  share: number;
+}
+
+/**
+ * Fusion labels a merged hit with every engine that supplied it (`exa+tavily`), so contribution
+ * counts split on `+` — otherwise the summary would report "exa+tavily: 4" and hide the fact that
+ * a lane contributed nothing.
+ */
+function summarizeContributions(results: { source_engine: string }[]): EngineContribution[] {
+  const counts = new Map<string, number>();
+  for (const result of results) {
+    const engines = new Set(
+      String(result.source_engine ?? '')
+        .split('+')
+        .map((engine) => engine.trim())
+        .filter(Boolean),
+    );
+    for (const engine of engines) counts.set(engine, (counts.get(engine) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([engine, count]) => ({ engine, count, share: count / Math.max(1, results.length) }))
+    .sort((a, b) => b.count - a.count || a.engine.localeCompare(b.engine));
+}
+
+function EngineSummary({ results }: { results: { source_engine: string }[] }) {
+  const contributions = summarizeContributions(results);
+  const merged = results.filter((result) => String(result.source_engine ?? '').includes('+')).length;
+
+  return (
+    <div className="rounded-lg border border-border-subtle bg-bg-surface p-2.5">
+      <div className="mb-1.5 flex items-baseline justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Engine contribution</span>
+        <span className="text-[10px] text-text-muted font-mono">{contributions.length} engines</span>
+      </div>
+      <div className="space-y-1">
+        {contributions.map(({ engine, count, share }) => (
+          <div key={engine} className="flex items-center gap-2" title={`${engine}: ${count} of ${results.length} fused sources`}>
+            <span className="w-20 flex-shrink-0 truncate text-[10px] text-text-secondary">{engine}</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-bg-hover">
+              <div className="h-full rounded-full bg-olive/70" style={{ width: `${Math.max(4, Math.round(share * 100))}%` }} />
+            </div>
+            <span className="w-6 flex-shrink-0 text-right text-[10px] font-mono text-text-muted">{count}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-1.5 border-t border-border-subtle pt-1 text-[9px] text-text-muted">
+        {results.length} fused {results.length === 1 ? 'source' : 'sources'}
+        {merged > 0 && ` · ${merged} confirmed by more than one engine`}
+      </div>
+    </div>
+  );
+}
+
+function SourceCard({ source }: { source: CardSource }) {
+  const url = source.url;
+  const title = source.title;
+  const snippet = source.snippet;
+  const citationId = source.citation_id ?? '';
+  const score = source.relevance_score;
+  const intent = queryIntent(source.query ?? '');
+  const bonus = freshnessBonus(source.published, intent);
+  const dated = Boolean(source.published);
 
   return (
     <a
@@ -181,9 +304,22 @@ function SourceCard({ source }: { source: Source | SourceRecord }) {
       </div>
       <p className="mt-1 text-[10px] text-text-muted line-clamp-2">{snippet}</p>
       <div className="mt-1 truncate text-[10px] text-accent/70">{url}</div>
-      {score !== undefined && score > 0 && (
-        <div className="mt-0.5 text-[9px] text-text-muted font-mono">RRF score: {score.toFixed(4)}</div>
-      )}
+      <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[9px] text-text-muted">
+        {score !== undefined && score > 0 && <span>RRF {score.toFixed(4)}</span>}
+        {dated && (
+          <span
+            className={intent.fresh ? 'text-olive' : ''}
+            title={
+              intent.fresh
+                ? `Published ${source.published} — freshness boost ×${bonus.toFixed(1)}`
+                : `Published ${source.published} — the query is not freshness-seeking, so the date did not move it`
+            }
+          >
+            {`· ${source.published!.slice(0, 10)}`}
+            {intent.fresh ? ` ×${bonus.toFixed(1)}` : ''}
+          </span>
+        )}
+      </div>
     </a>
   );
 }

@@ -5,8 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:preview": "bash scripts/dev-preview.sh",
+    "keys:import": "node scripts/import-keys.mjs keys.txt",
+    "keys:apply": "node scripts/import-keys.mjs keys.txt --apply",
+    "keys:paste": "node scripts/import-keys.mjs --stdin",
+    "smoke": "bash scripts/smoke.sh",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "engines:verify": "node scripts/verify-engines.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

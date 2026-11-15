@@ -1,15 +1,69 @@
-import { Message } from '../types';
-import { User, Compass, Globe, ExternalLink, Search } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Message, Source } from '../types';
+import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { splitFollowUps } from '../lib/followUps';
 
 interface MessageBubbleProps {
   message: Message;
   isStreaming: boolean;
+  /** the user turn this answer belongs to, so retry re-runs the right query */
+  query?: string;
+  onRetrySearch?: (query: string) => void;
+  onSaveResults?: (query: string, results: Source[]) => Promise<number>;
+  onFollowUp?: (question: string) => void;
 }
 
-export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
+export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSaveResults, onFollowUp }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  const [copied, setCopied] = useState(false);
+  const [shared, setShared] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'known'>('idle');
+
+  const results = message.search_results ?? [];
+  const { body, followUps } = useMemo(
+    () => (isUser ? { body: message.content, followUps: [] as string[] } : splitFollowUps(message.content)),
+    [isUser, message.content],
+  );
+
+  const sourceText = () =>
+    results
+      .map((source, index) => `${source.citation_id ?? `[${index + 1}]`} ${source.title}\n${source.url}`)
+      .join('\n\n');
+
+  const flash = (setter: (value: boolean) => void) => {
+    setter(true);
+    window.setTimeout(() => setter(false), 2000);
+  };
+
+  const handleCopy = async () => {
+    const text = results.length > 0 ? `${query ?? message.content}\n\n${sourceText()}` : body;
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(setCopied);
+    } catch {
+      /* clipboard blocked — leave the button unflashed rather than lying about it */
+    }
+  };
+
+  const handleShare = async () => {
+    const text = results.length > 0 ? `${results.length} sources for "${query ?? 'this search'}"\n\n${sourceText()}` : body;
+    try {
+      if (navigator.share) await navigator.share({ title: 'Fieldwork search', text });
+      else await navigator.clipboard.writeText(text);
+      flash(setShared);
+    } catch {
+      /* share sheet dismissed */
+    }
+  };
+
+  const handleSave = async () => {
+    if (!onSaveResults || !query || results.length === 0 || saveState === 'saving') return;
+    setSaveState('saving');
+    const saved = await onSaveResults(query, results);
+    setSaveState(saved > 0 ? 'saved' : 'known');
+  };
 
   return (
     <div className={`mb-6 flex gap-3 animate-slide-up ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -20,14 +74,14 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
       </div>
 
       <div className={`flex flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'} max-w-[80%]`}>
-        {message.search_enabled && message.search_results.length > 0 && (
+        {message.search_enabled && results.length > 0 && (
           <div className="mb-0.5 w-full rounded-lg border border-border-subtle bg-bg-surface p-2.5">
             <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-olive">
               <Search size={11} />
-              <span>Retrieved {message.search_results.length} sources via RRF</span>
+              <span>Retrieved {results.length} sources via RRF</span>
             </div>
             <div className="space-y-1">
-              {message.search_results.slice(0, 4).map((r, i) => (
+              {results.slice(0, 4).map((r, i) => (
                 <a
                   key={i}
                   href={r.url}
@@ -40,9 +94,27 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
                   <ExternalLink size={9} className="flex-shrink-0 opacity-0 group-hover:opacity-100 mt-0.5" />
                 </a>
               ))}
-              {message.search_results.length > 4 && (
-                <div className="text-[11px] text-text-muted">+ {message.search_results.length - 4} more sources</div>
+              {results.length > 4 && (
+                <div className="text-[11px] text-text-muted">+ {results.length - 4} more sources</div>
               )}
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-border-subtle pt-2">
+              <ActionButton icon={copied ? Check : Copy} label={copied ? 'Copied' : 'Copy'} onClick={handleCopy} active={copied} />
+              <ActionButton icon={shared ? Check : Share2} label={shared ? 'Shared' : 'Share'} onClick={handleShare} active={shared} />
+              <ActionButton
+                icon={Bookmark}
+                label={saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'known' ? 'In findings' : 'Save'}
+                onClick={handleSave}
+                active={saveState === 'saved' || saveState === 'known'}
+                disabled={!onSaveResults || saveState === 'saving'}
+              />
+              <ActionButton
+                icon={RotateCw}
+                label="Retry"
+                onClick={() => query && onRetrySearch?.(query)}
+                disabled={!onRetrySearch || !query}
+              />
             </div>
           </div>
         )}
@@ -62,10 +134,28 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
             <p className="text-sm whitespace-pre-wrap">{message.content}</p>
           ) : (
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
             </div>
           )}
         </div>
+
+        {!isUser && followUps.length > 0 && !isStreaming && (
+          <div className="flex w-full flex-wrap items-center gap-1.5 pt-0.5">
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">Keep digging</span>
+            {followUps.map((question) => (
+              <button
+                key={question}
+                onClick={() => onFollowUp?.(question)}
+                disabled={!onFollowUp}
+                title={question}
+                className="group flex max-w-full items-center gap-1 rounded-full border border-border-subtle bg-bg-surface px-2.5 py-1 text-left text-[11px] text-text-secondary transition-colors hover:border-accent/30 hover:bg-bg-elevated hover:text-text-primary disabled:opacity-40"
+              >
+                <span className="truncate">{question}</span>
+                <ArrowUpRight size={10} className="flex-shrink-0 text-text-muted group-hover:text-accent" />
+              </button>
+            ))}
+          </div>
+        )}
 
         {!isUser && message.model && message.content && (
           <div className="flex items-center gap-1.5 text-[10px] text-text-muted">
@@ -75,5 +165,32 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
         )}
       </div>
     </div>
+  );
+}
+
+function ActionButton({
+  icon: Icon,
+  label,
+  onClick,
+  active,
+  disabled,
+}: {
+  icon: React.ElementType;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
+        active ? 'bg-accent-subtle text-accent' : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+      }`}
+    >
+      <Icon size={11} />
+      {label}
+    </button>
   );
 }

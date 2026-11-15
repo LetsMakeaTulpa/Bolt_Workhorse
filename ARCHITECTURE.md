@@ -123,7 +123,10 @@ did), `ranking-harness` (`node experiments/ranking-harness.mjs` — fixed query 
 judgements, before/after nDCG/MRR; `--check` fails on regression). The query set is *contested*:
 queries pair results with near-identical term coverage so only engine trust or a date can separate
 them. An uncontested set scores the same under any weighting and silently measures nothing.
-It also reports `margin`, the order-free gap between the best answer and the best lesser result:
+`ranking-sweep` (`node experiments/ranking-sweep.mjs`) sweeps one constant at a time, ablates each
+constant to show what removing it costs (`--ablate`), and checks leave-one-out stability
+(`--stability`). It also reports `margin`, the order-free gap between the best answer and the best
+lesser result:
 nDCG cannot see a weighting that leaves a competing result ten times further behind without
 changing which result is first, and that safety is what intent weighting mostly buys., `web-engine-pipeline` (handler
 statuses end to end), `provider-keys`, `followups`, plus PGlite suites for RLS and rate limits.

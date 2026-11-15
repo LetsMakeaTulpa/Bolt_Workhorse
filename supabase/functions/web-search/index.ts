@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { mapExaResults, mapGrepHits, mapShodanMatches, mapTavilyResults } from "./parsers.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -25,14 +26,21 @@ interface SearchResult {
   url: string;
   snippet: string;
   source_engine: string;
+  /** every engine that independently returned this URL */
+  engines?: string[];
   relevance_score?: number;
   citation_id?: string;
 }
 
+/** Secrets for one request: the caller's own keys first, then the function environment. */
+type EngineKeys = Record<string, string>;
+
+const secret = (keys: EngineKeys | undefined, name: string): string => keys?.[name] ?? Deno.env.get(name) ?? '';
+
 interface SearchEngine {
   name: string;
   capabilities: string[];
-  search: (query: string, maxResults: number) => Promise<SearchResult[]>;
+  search: (query: string, maxResults: number, keys?: EngineKeys) => Promise<SearchResult[]>;
 }
 
 // ─── Search Engines ──────────────────────────────────────────────
@@ -185,6 +193,262 @@ const openAlexEngine: SearchEngine = {
   },
 };
 
+// ─── Extended engines (activated by secrets, skipped when absent) ─
+
+const UA = 'Mozilla/5.0 (compatible; FieldworkBot/1.0)';
+
+const googleEngine: SearchEngine = {
+  name: 'google',
+  capabilities: ['general', 'web'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const key = secret(keys, 'GOOGLE_API_KEY');
+    const cx = secret(keys, 'GOOGLE_CSE_ID');
+    if (!key || !cx) return [];
+    try {
+      const url = `https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${encodeURIComponent(query)}&num=${Math.min(10, maxResults)}`;
+      const resp = await fetch(url);
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return (data?.items ?? []).map((item: Record<string, string>) => ({
+        title: item.title ?? '',
+        url: item.link ?? '',
+        snippet: item.snippet ?? '',
+        source_engine: 'google',
+      }));
+    } catch { return []; }
+  },
+};
+
+const exaEngine: SearchEngine = {
+  name: 'exa',
+  capabilities: ['general', 'semantic', 'web', 'research'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const key = secret(keys, 'EXA_API_KEY');
+    if (!key) throw new Error('EXA_API_KEY is not set');
+    const wanted = Math.min(25, Math.max(5, maxResults));
+    const resp = await fetch('https://api.exa.ai/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+      body: JSON.stringify({
+        query,
+        numResults: wanted,
+        type: 'auto',
+        contents: { text: { maxCharacters: 500 } },
+      }),
+    });
+    if (!resp.ok) throw new Error(`exa http ${resp.status}`);
+    return mapExaResults(await resp.json(), wanted);
+  },
+};
+
+const searxngEngine: SearchEngine = {
+  name: 'searxng',
+  capabilities: ['general', 'web', 'meta'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const instances = secret(keys, 'SEARXNG_URL')
+      .split(',')
+      .map((value) => value.trim().replace(/\/$/, ''))
+      .filter(Boolean);
+    for (const base of instances) {
+      try {
+        const resp = await fetch(`${base}/search?q=${encodeURIComponent(query)}&format=json&safesearch=0`, {
+          headers: { 'User-Agent': UA },
+        });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const results = (data?.results ?? []).slice(0, maxResults).map((item: Record<string, string>) => ({
+          title: item.title ?? '',
+          url: item.url ?? '',
+          snippet: (item.content ?? '').slice(0, 300),
+          source_engine: 'searxng',
+        }));
+        if (results.length > 0) return results;
+      } catch { continue; }
+    }
+    return [];
+  },
+};
+
+const tavilyEngine: SearchEngine = {
+  name: 'tavily',
+  capabilities: ['general', 'research', 'scrape'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const key = secret(keys, 'TAVILY_API_KEY');
+    if (!key) throw new Error('TAVILY_API_KEY is not set');
+    const wanted = Math.min(20, maxResults);
+    const resp = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key, query, max_results: wanted, search_depth: 'advanced' }),
+    });
+    if (!resp.ok) throw new Error(`tavily http ${resp.status}`);
+    return mapTavilyResults(await resp.json(), wanted);
+  },
+};
+
+const firecrawlEngine: SearchEngine = {
+  name: 'firecrawl',
+  capabilities: ['general', 'scrape', 'crawl'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const key = secret(keys, 'FIRECRAWL_API_KEY');
+    if (!key) return [];
+    try {
+      const resp = await fetch('https://api.firecrawl.dev/v1/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ query, limit: Math.min(10, maxResults) }),
+      });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      const items = data?.data ?? data?.results ?? [];
+      return items.map((item: Record<string, string>) => ({
+        title: item.title ?? item.url,
+        url: item.url,
+        snippet: (item.description ?? item.markdown ?? '').slice(0, 320),
+        source_engine: 'firecrawl',
+      }));
+    } catch { return []; }
+  },
+};
+
+/**
+ * grep.app code search.
+ *
+ * The public endpoint sits behind a bot challenge for datacenter IPs, so this engine is
+ * opt-in twice over: GREPAPP_BASE_URL can point at a proxy/mirror you control, and
+ * GREPAPP_COOKIE can carry a browser `cf_clearance`-style cookie. With neither, it simply
+ * returns no results instead of failing the search.
+ */
+const grepAppEngine: SearchEngine = {
+  name: 'grepapp',
+  capabilities: ['technical', 'code', 'snippets'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const mirror = secret(keys, 'GREPAPP_BASE_URL');
+    const base = (mirror || 'https://grep.app').replace(/\/$/, '');
+    const cookie = secret(keys, 'GREPAPP_COOKIE');
+    try {
+      const resp = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}&page=1`, {
+        headers: {
+          'User-Agent': UA,
+          Accept: 'application/json',
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+      });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return mapGrepHits(data, maxResults);
+    } catch { return []; }
+  },
+};
+
+const shodanEngine: SearchEngine = {
+  name: 'shodan',
+  capabilities: ['intel', 'hosts', 'iot', 'services'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const key = secret(keys, 'SHODAN_API_KEY');
+    if (!key) return [];
+    try {
+      const params = new URLSearchParams({ key, query, minify: 'true' });
+      const resp = await fetch(`https://api.shodan.io/shodan/host/search?${params.toString()}`);
+      // 401 = bad key, 402 = no query credits; both degrade to no results rather than an error
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return mapShodanMatches(data, maxResults);
+    } catch { return []; }
+  },
+};
+
+const urlscanEngine: SearchEngine = {
+  name: 'urlscan',
+  capabilities: ['intel', 'domains', 'phishing'],
+  async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
+    const key = secret(keys, 'URLSCAN_API_KEY');
+    try {
+      const resp = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=${Math.min(20, maxResults)}`, {
+        headers: key ? { 'API-Key': key } : {},
+      });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return (data?.results ?? []).slice(0, maxResults).map((item: Record<string, any>) => ({
+        title: item.page?.title || item.page?.domain || 'urlscan result',
+        url: item.page?.url ?? `https://urlscan.io/result/${item.task?.uuid ?? ''}/`,
+        snippet: `${item.page?.domain ?? ''} · ${item.task?.time ?? ''}`.trim(),
+        source_engine: 'urlscan',
+      }));
+    } catch { return []; }
+  },
+};
+
+const ahmiaEngine: SearchEngine = {
+  name: 'ahmia',
+  capabilities: ['dark', 'onion', 'general'],
+  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+    try {
+      const resp = await fetch(`https://ahmia.fi/search/?q=${encodeURIComponent(query)}`, {
+        headers: { 'User-Agent': UA, Accept: 'text/html' },
+        redirect: 'follow',
+      });
+      if (!resp.ok) return [];
+      const html = await resp.text();
+      const results: SearchResult[] = [];
+      const linkRegex = /<a[^>]+href="([^"]*redirect_url=([^"&]+)[^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
+      let match;
+      while ((match = linkRegex.exec(html)) !== null && results.length < maxResults) {
+        const onionUrl = decodeURIComponent(match[2]);
+        if (!onionUrl.includes('.onion')) continue;
+        results.push({
+          title: match[3].replace(/<[^>]+>/g, '').trim() || onionUrl,
+          url: onionUrl,
+          snippet: 'Onion service indexed by Ahmia',
+          source_engine: 'ahmia',
+        });
+      }
+      return results;
+    } catch { return []; }
+  },
+};
+
+const crtshEngine: SearchEngine = {
+  name: 'crtsh',
+  capabilities: ['intel', 'domains', 'subdomains'],
+  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+    const domain = query.match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+/i)?.[0];
+    if (!domain) return [];
+    try {
+      const resp = await fetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, { headers: { 'User-Agent': UA } });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      if (!Array.isArray(data)) return [];
+      const seen = new Set<string>();
+      const results: SearchResult[] = [];
+      for (const cert of data) {
+        const name = cert?.common_name;
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        results.push({
+          title: `Certificate: ${name}`,
+          url: `https://crt.sh/?q=${encodeURIComponent(name)}`,
+          snippet: `${cert?.issuer_name ?? ''} · ${cert?.not_before ?? ''}`.trim(),
+          source_engine: 'crtsh',
+        });
+        if (results.length >= maxResults) break;
+      }
+      return results;
+    } catch { return []; }
+  },
+};
+
+/** Which secrets each engine needs, so a request can say *why* it returned nothing. */
+const ENGINE_KEY_ENV: Record<string, string[]> = {
+  google: ['GOOGLE_API_KEY', 'GOOGLE_CSE_ID'],
+  exa: ['EXA_API_KEY'],
+  tavily: ['TAVILY_API_KEY'],
+  firecrawl: ['FIRECRAWL_API_KEY'],
+  shodan: ['SHODAN_API_KEY'],
+  urlscan: ['URLSCAN_API_KEY'],
+  searxng: ['SEARXNG_URL'],
+};
+
 const ENGINES: Record<string, SearchEngine> = {
   duckduckgo: duckDuckGoEngine,
   wikipedia: wikipediaEngine,
@@ -192,6 +456,16 @@ const ENGINES: Record<string, SearchEngine> = {
   github: githubEngine,
   brave: braveEngine,
   openalex: openAlexEngine,
+  google: googleEngine,
+  exa: exaEngine,
+  searxng: searxngEngine,
+  tavily: tavilyEngine,
+  firecrawl: firecrawlEngine,
+  shodan: shodanEngine,
+  grepapp: grepAppEngine,
+  urlscan: urlscanEngine,
+  ahmia: ahmiaEngine,
+  crtsh: crtshEngine,
 };
 
 // ─── Semantic Query Compiler ─────────────────────────────────────
@@ -241,24 +515,42 @@ Return ONLY the queries, one per line. No numbering, no explanations.`;
 
 // ─── Reciprocal Rank Fusion ──────────────────────────────────────
 
+/**
+ * Identity of a result across engines: same page should merge even when one engine wrote
+ * `www.` or a trailing slash. Query strings are kept — they often select different content.
+ */
+function urlKey(raw: string): string {
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = url.pathname.replace(/\/+$/, '');
+    return `${host}${path}${url.search}`.toLowerCase();
+  } catch {
+    return raw.trim().toLowerCase();
+  }
+}
+
 function reciprocalRankFusion(
   engineResults: { engine: string; results: SearchResult[] }[],
   weights: Record<string, number> = {},
 ): SearchResult[] {
   const k = 60; // RRF constant
-  const scores = new Map<string, { result: SearchResult; score: number }>();
+  const scores = new Map<string, { result: SearchResult; score: number; engines: string[] }>();
 
   for (const { engine, results } of engineResults) {
     const weight = weights[engine] ?? 1.0;
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      const key = r.url;
+      const key = urlKey(r.url);
       const rrfScore = weight / (k + i + 1);
       const existing = scores.get(key);
       if (existing) {
+        // agreement is the point: additive score plus a record of who found it
         existing.score += rrfScore;
+        if (!existing.engines.includes(engine)) existing.engines.push(engine);
+        if (!existing.result.snippet && r.snippet) existing.result.snippet = r.snippet;
       } else {
-        scores.set(key, { result: r, score: rrfScore });
+        scores.set(key, { result: r, score: rrfScore, engines: [engine] });
       }
     }
   }
@@ -268,6 +560,8 @@ function reciprocalRankFusion(
 
   return fused.map((f) => ({
     ...f.result,
+    engines: f.engines,
+    source_engine: f.engines.join('+'),
     relevance_score: f.score,
   }));
 }
@@ -287,11 +581,13 @@ function expandQuery(query: string): string[] {
 // ─── Engine Selection (Portfolio Optimizer) ──────────────────────
 
 const ENGINE_CAPABILITY_MAP: Record<string, string[]> = {
-  general: ["duckduckgo", "wikipedia", "brave"],
-  academic: ["arxiv", "openalex", "wikipedia"],
-  technical: ["github", "duckduckgo", "wikipedia"],
+  general: ["duckduckgo", "wikipedia", "brave", "exa", "searxng", "google"],
+  academic: ["arxiv", "openalex", "wikipedia", "exa"],
+  technical: ["github", "grepapp", "duckduckgo", "wikipedia", "exa"],
   historical: ["wikipedia", "duckduckgo", "arxiv"],
-  verification: ["duckduckgo", "wikipedia", "brave"],
+  verification: ["duckduckgo", "wikipedia", "brave", "google"],
+  intel: ["shodan", "grepapp", "urlscan", "crtsh", "duckduckgo"],
+  dark: ["ahmia", "duckduckgo"],
   legacy: ["duckduckgo", "brave"],
 };
 
@@ -301,7 +597,7 @@ function selectEngines(preset: string, configuredEngines: string[]): string[] {
     deep: ["duckduckgo", "wikipedia", "arxiv", "github", "brave"],
     historical: ["duckduckgo", "wikipedia", "arxiv"],
     academic: ["arxiv", "wikipedia", "openalex", "duckduckgo"],
-    technical: ["github", "duckduckgo", "wikipedia"],
+    technical: ["github", "grepapp", "duckduckgo", "wikipedia"],
     "fact-check": ["duckduckgo", "wikipedia", "brave"],
     "source-tracing": ["duckduckgo", "wikipedia", "arxiv"],
     timeline: ["duckduckgo", "wikipedia", "arxiv"],
@@ -309,7 +605,9 @@ function selectEngines(preset: string, configuredEngines: string[]): string[] {
     explain: ["duckduckgo", "wikipedia", "arxiv", "github"],
     "map-relationships": ["duckduckgo", "wikipedia", "arxiv"],
     "research-gaps": ["arxiv", "wikipedia", "duckduckgo"],
-    dark: ["duckduckgo", "brave"],
+    dark: ["ahmia", "duckduckgo", "brave", "exa"],
+    intel: ["shodan", "urlscan", "crtsh", "duckduckgo", "exa"],
+    uncensored: ["searxng", "exa", "duckduckgo", "brave"],
     "deep-legacy": ["duckduckgo", "wikipedia", "arxiv", "github", "brave"],
     "shodan-web": ["duckduckgo", "brave"],
   };
@@ -322,7 +620,31 @@ function selectEngines(preset: string, configuredEngines: string[]): string[] {
 
 // ─── Main Handler ────────────────────────────────────────────────
 
-Deno.serve(async (req: Request) => {
+/**
+ * A signed-in caller may have pasted their own provider keys. They are read once per request and
+ * handed to the engines, so one person's Tavily quota is never spent by another's search.
+ * Anything unreadable (bad token, missing table) simply means "fall back to the environment".
+ */
+async function loadUserKeys(req: Request): Promise<EngineKeys> {
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token || !SUPABASE_URL || !SERVICE_ROLE_KEY) return {};
+  try {
+    const client = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    const { data: auth, error } = await client.auth.getUser(token);
+    if (error || !auth?.user?.id) return {};
+    const { data, error: readError } = await client
+      .from("user_engine_keys")
+      .select("name, value")
+      .eq("user_id", auth.user.id);
+    if (readError || !data) return {};
+    return Object.fromEntries(data.map((row) => [row.name as string, row.value as string]));
+  } catch (err) {
+    console.error("user keys unavailable, using function secrets", (err as Error).message);
+    return {};
+  }
+}
+
+export async function handleRequest(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
@@ -345,6 +667,9 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // a signed-in caller's own provider keys win over the function's environment
+    const userKeys = await loadUserKeys(req);
+
     // Fetch API key from database
     const FEATHERLESS_API_KEY = await getApiKey();
     if (!FEATHERLESS_API_KEY && shouldCompile) {
@@ -366,18 +691,45 @@ Deno.serve(async (req: Request) => {
     const allEngineResults: { engine: string; results: SearchResult[] }[] = [];
     const searchPromises: Promise<void>[] = [];
 
+    // Every engine reports why it produced nothing, so "0 results" can be diagnosed from one
+    // response instead of guessing between a missing secret, a rejected key and a quiet query.
+    type EngineReport = { engine: string; status: string; results: number; detail?: string };
+    const reports = new Map<string, EngineReport>();
+    const SEVERITY: Record<string, number> = { ok: 0, empty: 1, error: 2, missing_key: 3, unknown_engine: 3 };
+    const note = (engineName: string, status: string, count = 0, detail?: string) => {
+      const prev = reports.get(engineName);
+      const keepPrev = prev && (SEVERITY[prev.status] ?? 0) > (SEVERITY[status] ?? 0);
+      reports.set(engineName, {
+        engine: engineName,
+        status: keepPrev ? prev!.status : status,
+        results: (prev?.results ?? 0) + count,
+        detail: keepPrev ? prev!.detail : detail,
+      });
+    };
+
     for (const engineName of engines) {
       const engine = ENGINES[engineName];
-      if (!engine) continue;
+      if (!engine) {
+        note(engineName, 'unknown_engine', 0, 'no engine registered under this name');
+        continue;
+      }
+
+      const required = ENGINE_KEY_ENV[engineName];
+      const missing = required?.find((name) => !secret(userKeys, name));
+      if (missing) {
+        note(engineName, 'missing_key', 0, `${missing} is not set for this account`);
+        continue;
+      }
 
       // For each engine, search with the primary query (and one expansion if compiled)
       const queriesForEngine = queries.slice(0, 2);
       for (const q of queriesForEngine) {
         searchPromises.push(
-          engine.search(q, maxResultsPerEngine).then((results) => {
+          engine.search(q, maxResultsPerEngine, userKeys).then((results) => {
+            note(engineName, results.length > 0 ? 'ok' : 'empty', results.length);
             allEngineResults.push({ engine: engineName, results });
-          }).catch(() => {
-            // Engine failure — graceful degradation
+          }).catch((err) => {
+            note(engineName, 'error', 0, String(err?.message ?? err).slice(0, 120));
           })
         );
       }
@@ -409,14 +761,17 @@ Deno.serve(async (req: Request) => {
         engines_used: engines,
         total_results: finalResults.length,
         preset,
+        engine_status: [...reports.values()],
         results: finalResults,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: err.message }),
+      JSON.stringify({ error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
-});
+}
+
+Deno.serve(handleRequest);

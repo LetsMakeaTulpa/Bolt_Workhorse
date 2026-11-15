@@ -1,0 +1,161 @@
+{
+  "description": "Fixed ranking benchmark. Each query carries per-engine ranked lists as the engines would return them, and a graded judgement per result (r): 2 = answers the query, 1 = related, 0 = off-topic. `p` is the publication date, needed for freshness queries.",
+  "evaluated_at": "2026-11-15T00:00:00Z",
+  "queries": [
+    {
+      "id": "gnn-overfit",
+      "class": "semantic",
+      "query": "why do graph neural networks overfit on small graphs",
+      "lists": {
+        "exa": [
+          { "t": "Why graph neural networks overfit on small graphs", "u": "https://distill.example/gnn-overfit", "s": "Overfitting in graph neural networks arises from too few labelled nodes", "r": 2 },
+          { "t": "Graph neural networks: a review", "u": "https://arxiv.example/gnn-review", "s": "Survey of GNN architectures", "r": 1 },
+          { "t": "Message passing basics", "u": "https://blog.example/mp", "s": "Intro to message passing on graphs", "r": 1 },
+          { "t": "GNN overfitting explained", "u": "https://medium.example/gnn-of", "s": "Small graphs generalise poorly", "r": 2 }
+        ],
+        "tavily": [
+          { "t": "Graph neural networks generalise study", "u": "https://crawl.example/gnn-study", "s": "Benchmark of GNN generalisation", "r": 1 },
+          { "t": "What is a graph neural network", "u": "https://crawl.example/gnn-intro", "s": "Overview for beginners", "r": 0 },
+          { "t": "Why deep learning overfits", "u": "https://crawl.example/dl-overfit", "s": "Classic overfitting in deep nets", "r": 0 }
+        ],
+        "arxiv": [
+          { "t": "On the over-smoothing and overfitting of graph neural networks on small graphs", "u": "https://arxiv.example/2101.00001", "s": "We study GNN overfitting on small graphs", "p": "2021-01-01", "r": 2 },
+          { "t": "Graph neural networks survey", "u": "https://arxiv.example/1901.00596", "s": "Survey", "p": "2019-01-02", "r": 1 }
+        ]
+      }
+    },
+    {
+      "id": "eu-ai-act",
+      "class": "fresh",
+      "query": "latest EU AI Act enforcement news 2026",
+      "lists": {
+        "tavily": [
+          { "t": "EU AI Act enforcement begins: what changed this week", "u": "https://news.example/eu-ai-2026", "s": "Regulators started enforcing obligations", "p": "2026-11-12", "r": 2 },
+          { "t": "EU AI Act: timeline and obligations", "u": "https://news.example/eu-ai-timeline", "s": "Overview of obligations", "p": "2024-03-13", "r": 1 }
+        ],
+        "exa": [
+          { "t": "The EU AI Act explained", "u": "https://explain.example/eu-ai-act", "s": "Explainer from 2021", "p": "2021-04-21", "r": 0 },
+          { "t": "AI Act: state of play", "u": "https://policy.example/ai-act-state", "s": "Analysis of enforcement", "p": "2026-10-01", "r": 2 }
+        ],
+        "duckduckgo": [
+          { "t": "EU AI Act enforcement - latest news", "u": "https://ddg.example/eu-ai", "s": "News roundup", "p": "2026-11-10", "r": 2 },
+          { "t": "AI Act history", "u": "https://ddg.example/ai-act-old", "s": "Background from 2019", "p": "2019-06-01", "r": 0 }
+        ]
+      }
+    },
+    {
+      "id": "roman-republic",
+      "class": "evergreen",
+      "query": "history of the roman republic",
+      "lists": {
+        "wikipedia": [
+          { "t": "Roman Republic", "u": "https://en.wikipedia.example/Roman_Republic", "s": "The Roman Republic was a state of the classical Roman civilisation", "r": 2 },
+          { "t": "Roman Empire", "u": "https://en.wikipedia.example/Roman_Empire", "s": "Successor state", "r": 1 }
+        ],
+        "tavily": [
+          { "t": "10 best Roman holiday tours", "u": "https://travel.example/rome-tours", "s": "Book a tour of Rome", "p": "2026-11-01", "r": 0 },
+          { "t": "Roman Republic summary", "u": "https://crawl.example/roman-republic", "s": "Summary of the republic", "r": 1 }
+        ],
+        "exa": [
+          { "t": "The fall of the Roman Republic: a structural history", "u": "https://essay.example/roman-republic", "s": "History of the republic and its collapse", "r": 2 },
+          { "t": "Roman law origins", "u": "https://essay.example/roman-law", "s": "Origins of Roman law", "r": 1 }
+        ]
+      }
+    },
+    {
+      "id": "xz-backdoor",
+      "class": "intel",
+      "query": "CVE-2024-3094 xz backdoor exploitation",
+      "lists": {
+        "github": [
+          { "t": "CVE-2024-3094 advisory", "u": "https://github.example/advisory/CVE-2024-3094", "s": "Backdoor in xz/liblzma", "r": 2 },
+          { "t": "xz-utils patch analysis", "u": "https://github.example/xz-patch", "s": "Patch diff for the backdoor", "r": 1 }
+        ],
+        "duckduckgo": [
+          { "t": "CVE-2024-3094: what we know", "u": "https://sec.example/cve-2024-3094", "s": "Exploitation analysis of the xz backdoor", "r": 2 },
+          { "t": "XZ Utils backdoor - incident summary", "u": "https://en.wikipedia.example/XZ_Utils_backdoor", "s": "Incident summary", "r": 2 }
+        ],
+        "exa": [
+          { "t": "Supply chain trust in open source", "u": "https://sem.example/supply-chain", "s": "Conceptual discussion of trust in maintainers", "r": 1 },
+          { "t": "Backdoor detection with machine learning", "u": "https://sem.example/ml-backdoor", "s": "ML for backdoor detection", "r": 0 }
+        ]
+      }
+    },
+    {
+      "id": "postgres-bloat",
+      "class": "technical",
+      "query": "postgres index bloat diagnosis",
+      "lists": {
+        "stackexchange": [
+          { "t": "How to diagnose index bloat in PostgreSQL", "u": "https://dba.example/q/123", "s": "Use pgstattuple and pg_stat_user_indexes", "r": 2 },
+          { "t": "VACUUM FULL vs pg_repack", "u": "https://dba.example/q/456", "s": "Rebuild indexes without locking", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Diagnosing PostgreSQL index bloat", "u": "https://blog.example/pg-bloat", "s": "pgstattuple and pg_stat_user_indexes walkthrough", "r": 2 }
+        ],
+        "github": [
+          { "t": "pg_repack", "u": "https://github.example/reorg/pg_repack", "s": "Reorganise tables online", "r": 1 }
+        ]
+      }
+    },
+    {
+      "id": "crispr-offtarget",
+      "class": "scholarly",
+      "query": "crispr off-target prediction benchmarks",
+      "lists": {
+        "arxiv": [
+          { "t": "Benchmarking CRISPR off-target prediction tools", "u": "https://arxiv.example/2301.00002", "s": "We benchmark prediction tools across datasets", "p": "2023-01-01", "r": 2 }
+        ],
+        "europepmc": [
+          { "t": "CRISPR off-target prediction: a systematic benchmark", "u": "https://europepmc.example/PMC123", "s": "Systematic benchmark of off-target tools", "p": "2022-05-04", "r": 2 },
+          { "t": "Off-target effects in CRISPR", "u": "https://europepmc.example/PMC456", "s": "Review of off-target effects", "p": "2018-02-02", "r": 1 }
+        ],
+        "exa": [
+          { "t": "CRISPR off-target prediction benchmark", "u": "https://sem.example/crispr", "s": "Prediction methods compared", "r": 2 }
+        ],
+        "tavily": [
+          { "t": "What is CRISPR?", "u": "https://crawl.example/crispr-intro", "s": "Beginner explainer", "p": "2026-10-30", "r": 0 }
+        ]
+      }
+    },
+    {
+      "id": "rrf-implementation",
+      "class": "technical",
+      "query": "reciprocal rank fusion implementation",
+      "lists": {
+        "github": [
+          { "t": "Reciprocal rank fusion implementation", "u": "https://github.example/rrf", "s": "RRF in 40 lines of Python", "r": 2 }
+        ],
+        "stackexchange": [
+          { "t": "How to implement reciprocal rank fusion", "u": "https://so.example/q/789", "s": "The k=60 constant and implementation", "r": 2 }
+        ],
+        "exa": [
+          { "t": "Reciprocal rank fusion for hybrid search", "u": "https://blog.example/rrf", "s": "RRF explained with code", "r": 1 }
+        ],
+        "tavily": [
+          { "t": "Hybrid search explained", "u": "https://crawl.example/hybrid", "s": "Overview of hybrid search", "r": 1 }
+        ]
+      }
+    },
+    {
+      "id": "tesla-ir",
+      "class": "navigational",
+      "query": "tesla.com investor relations filings",
+      "lists": {
+        "duckduckgo": [
+          { "t": "Tesla Investor Relations", "u": "https://ir.tesla.example/", "s": "Filings and quarterly reports", "r": 2 }
+        ],
+        "google": [
+          { "t": "Tesla, Inc. - SEC filings", "u": "https://sec.example/tesla", "s": "10-K, 10-Q filings", "r": 2 }
+        ],
+        "exa": [
+          { "t": "Tesla stock analysis 2026", "u": "https://sem.example/tesla-stock", "s": "Investor commentary and valuation", "r": 1 },
+          { "t": "Elon Musk biography", "u": "https://sem.example/musk", "s": "Biography of the CEO", "r": 0 }
+        ],
+        "tavily": [
+          { "t": "Tesla investor relations overview", "u": "https://crawl.example/tesla-ir", "s": "IR overview page", "r": 1 }
+        ]
+      }
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 export interface Conversation {
   id: string;
+  /** owner; set by the database from the signed-in session */
+  user_id?: string | null;
   title: string;
   model: string;
   project_id: string | null;
@@ -24,8 +26,14 @@ export interface Source {
   url: string;
   snippet: string;
   source_engine: string;
+  /** ISO date (YYYY-MM-DD) when the engine reports one; used for freshness ranking */
+  published?: string;
   relevance_score?: number;
   citation_id?: string;
+  /** every engine that independently returned this source (corroboration) */
+  engines?: string[];
+  /** IDF-weighted query coverage, 0-1 */
+  relevance?: number;
 }
 
 export interface SourceRecord {
@@ -129,6 +137,17 @@ export interface ModelInfo {
   name: string;
   context_length: number;
   max_completion_tokens: number;
+  /** Models pulled from the refusal-free lane (XORTRON, uncensored, abliterated, heretic families). */
+  lane?: 'refusal-free';
+}
+
+/** What the search function reports about each engine it was asked to run. */
+export interface EngineStatus {
+  engine: string;
+  /** ok | empty | missing_key | error | unknown_engine — kept loose so new reasons still render */
+  status: string;
+  results: number;
+  detail?: string;
 }
 
 export interface SearchResponse {
@@ -137,5 +156,7 @@ export interface SearchResponse {
   total_results: number;
   engines_used: string[];
   preset: string;
+  /** absent on functions deployed before per-engine diagnostics existed */
+  engine_status?: EngineStatus[];
   results: Source[];
 }

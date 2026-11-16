@@ -2,6 +2,7 @@ import { Source, Finding, ActivityLog, SourceRecord } from '../types';
 import { queryIntent } from '../lib/fusion';
 import { describeIntent, rankSources } from '../lib/rankExplain';
 import { SourceCard, type CardSource } from './SourceCard';
+import { NoSourcesCard } from './NoSourcesCard';
 import { Search, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar } from 'lucide-react';
 import { SearchMap } from './SearchMap';
 import type { LucideIcon } from 'lucide-react';
@@ -17,6 +18,8 @@ interface InvestigationPanelProps {
   sources: SourceRecord[];
   /** query behind the current results, used to explain the ranking */
   query?: string;
+  /** the gaps behind an empty run, listed in the panel rather than only in the answer */
+  gaps?: string[];
   tab: PanelTab;
   onTabChange: (tab: PanelTab) => void;
   onCollapse: () => void;
@@ -33,6 +36,7 @@ export function InvestigationPanel({
   activityLogs,
   sources,
   query,
+  gaps,
   tab,
   onTabChange,
   onCollapse,
@@ -58,7 +62,14 @@ export function InvestigationPanel({
         {tab === 'map' && <SearchMap results={searchResults} isSearching={isSearching} />}
         {tab === 'activity' && <ActivityTab logs={activityLogs} isSearching={isSearching} />}
         {tab === 'sources' && (
-          <SourcesTab results={searchResults} sources={sources} isSearching={isSearching} query={query} />
+          <SourcesTab
+            results={searchResults}
+            sources={sources}
+            isSearching={isSearching}
+            query={query}
+            gaps={gaps}
+            onRetrySearch={onRetrySearch}
+          />
         )}
         {tab === 'evidence' && <FindingsTab findings={findings} onUpdateStatus={onUpdateFindingStatus} onRetrySearch={onRetrySearch} />}
       </div>
@@ -135,11 +146,16 @@ function SourcesTab({
   sources,
   isSearching,
   query,
+  gaps,
+  onRetrySearch,
 }: {
   results: Source[];
   sources: SourceRecord[];
   isSearching: boolean;
   query?: string;
+  /** the gap lines the empty run recorded, so an empty page still explains itself */
+  gaps?: string[];
+  onRetrySearch?: (query: string) => void;
 }) {
   if (isSearching) {
     return (
@@ -164,13 +180,8 @@ function SourcesTab({
     : results.map((r) => ({ ...r, citation_id: r.citation_id ?? '', relevance_score: r.relevance_score ?? 0, query }));
 
   if (displaySources.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-10">
-        <Globe size={28} className="text-text-muted mb-2" />
-        <p className="text-xs text-text-secondary">No sources retrieved yet</p>
-        <p className="text-[11px] text-text-muted mt-0.5">Send a question with search enabled</p>
-      </div>
-    );
+    // never a blank panel: after a run that found nothing it names the gaps and offers the next move
+    return <NoSourcesCard query={query} gaps={gaps} onRetrySearch={onRetrySearch} />;
   }
 
   // One order instead of a section per provider: a rank is only worth showing if it matches where

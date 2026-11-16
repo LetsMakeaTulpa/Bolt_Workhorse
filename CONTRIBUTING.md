@@ -27,7 +27,7 @@ npm run smoke -- --live  # + read-only probes against the live Supabase project 
 
 Rules a change has to respect:
 
-- **Green means every check that ran passed, 0 failed** — 26 on a full install (22 that always run,
+- **Green means every check that ran passed, 0 failed** — 27 on a full install (23 that always run,
   plus 4 database checks). The script exits non-zero if anything fails; do not merge on a red run,
   and do not treat a red run as "probably the environment" without reading the log. Failing checks
   print the last 20 lines of their output.

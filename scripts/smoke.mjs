@@ -154,6 +154,20 @@ if (existsSync(join('node_modules', 'react-test-renderer'))) {
   }
 }
 
+// ── 4i3. an empty Sources panel still explains itself and offers a next move ──
+{
+  const dir = join('node_modules', '.cache', 'fieldwork');
+  mkdirSync(dir, { recursive: true });
+  const card = join(dir, 'no-sources-card.mjs');
+  try {
+    bundle('src/components/NoSourcesCard.tsx', card, ['--jsx=automatic', '--external:react', '--external:react-dom']);
+    nodeTest('empty sources panel', 'experiments/no-sources-card.test.mjs', { NO_SOURCES_MODULE: asModulePath(card) });
+  } catch (err) {
+    failed.push('empty sources panel');
+    console.log(`→ empty sources panel\n  FAILED\n    ${err.message}`);
+  }
+}
+
 // ── 4j–4n. the answer contract, the empty page, prompts, ranking, searxng ────
 nodeTest('system prompt', 'experiments/system-prompt.test.mjs');
 nodeTest('empty result', 'experiments/empty-result.test.mjs');

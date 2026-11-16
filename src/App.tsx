@@ -667,6 +667,13 @@ export default function App() {
               activityLogs={activityLogs}
               sources={sources}
               query={lastSearchQuery}
+              gaps={
+                // an empty Sources panel names the same gaps the answer's gap report lists, so a
+                // dead search never leaves a page with nothing on it
+                lastSearchQuery
+                  ? buildGapReport({ query: lastSearchQuery, engines, issues: engineIssues, laneYield }).gaps
+                  : []
+              }
               tab={panelTab}
               onTabChange={setPanelTab}
               onCollapse={() => setShowSearchPanel(false)}

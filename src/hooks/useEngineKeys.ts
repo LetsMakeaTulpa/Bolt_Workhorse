@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { fetchConfiguredSecrets } from '../lib/api';
 import { supabase } from '../lib/supabase';
 
 /**
@@ -12,16 +13,25 @@ export function useEngineKeys(userId: string | undefined) {
   const [loading, setLoading] = useState(false);
   /** the table may not exist yet in a project that has not applied the migration */
   const [unavailable, setUnavailable] = useState(false);
+  /** secret names the deployed function holds; null when it cannot say (older build, offline) */
+  const [deployment, setDeployment] = useState<string[] | null>(null);
 
   const refresh = useCallback(async () => {
+    // the deployment's own secrets are asked for even signed out: they do not depend on an account
+    const configured = fetchConfiguredSecrets();
     if (!userId) {
       setNames([]);
       setUnavailable(false);
+      setDeployment(await configured);
       return;
     }
     setLoading(true);
-    const { data, error } = await supabase.from('user_engine_keys').select('name');
+    const [{ data, error }, secrets] = await Promise.all([
+      supabase.from('user_engine_keys').select('name'),
+      configured,
+    ]);
     setLoading(false);
+    setDeployment(secrets);
     if (error) {
       // a missing table is a setup state, not an error worth shouting about in the composer
       setUnavailable(/does not exist|user_engine_keys/i.test(error.message));
@@ -36,5 +46,5 @@ export function useEngineKeys(userId: string | undefined) {
     void refresh();
   }, [refresh]);
 
-  return { names, loading, unavailable, refresh };
+  return { names, loading, unavailable, deployment, refresh };
 }

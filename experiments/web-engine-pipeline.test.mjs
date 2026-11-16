@@ -37,7 +37,7 @@ globalThis.Deno = {
   serve: () => {},
 };
 
-const { handleRequest, isKeyRejection, searchWithKeyFallback } = await import(pathToFileURL(OUT).href);
+const { configuredSecrets, handleRequest, isKeyRejection, searchWithKeyFallback } = await import(pathToFileURL(OUT).href);
 
 // ── fixture upstreams, shaped like the real APIs ──────────────────────────────
 const EXA_PAYLOAD = {
@@ -201,6 +201,25 @@ check('provider wording counts too', isKeyRejection('{"error":"invalid api key"}
 check('a 500 is not a key rejection', !isKeyRejection('exa http 500'));
 check('a timeout is not a key rejection', !isKeyRejection('The operation was aborted'));
 check('an empty result is not a rejection', !isKeyRejection('no results'));
+
+// ── 7. the configuration probe the composer asks before a search ────────────
+{
+  const previous = env;
+  env = { EXA_API_KEY: 'exa-test', SEARXNG_URL: 'http://sx.test', TAVILY_API_KEY: '   ' };
+
+  const reported = configuredSecrets();
+  check('the probe names configured secrets only', reported.join(',') === 'EXA_API_KEY,SEARXNG_URL', reported.join(','));
+  check('a blank secret counts as not configured', !reported.includes('TAVILY_API_KEY'), reported.join(','));
+  check('no secret value leaves the function', !JSON.stringify(reported).includes('exa-test'));
+
+  const resp = await handleRequest(new Request('https://fn.test/web-search', { method: 'GET' }));
+  const body = await resp.json();
+  check('GET answers the probe', resp.status === 200 && Array.isArray(body.configured), JSON.stringify(body));
+  check('the response carries the same names', (body.configured ?? []).join(',') === 'EXA_API_KEY,SEARXNG_URL', JSON.stringify(body.configured));
+  check('the probe is CORS-readable', resp.headers.get('Access-Control-Allow-Origin') === '*');
+
+  env = previous;
+}
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);

@@ -475,4 +475,23 @@ export async function webSearch(
   return resp.json();
 }
 
+/**
+ * Which secrets the deployed function holds. Names only, never values.
+ *
+ * `null` means the question could not be answered — an older deployment without the probe, offline,
+ * or a non-200 — and the composer must keep saying "unknown" rather than claiming the engine is
+ * unconfigured, which it cannot know.
+ */
+export async function fetchConfiguredSecrets(): Promise<string[] | null> {
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/web-search`, { method: 'GET', headers });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { configured?: unknown };
+    if (!Array.isArray(data.configured)) return null;
+    return data.configured.filter((name): name is string => typeof name === 'string');
+  } catch {
+    return null;
+  }
+}
+
 export type { Source };

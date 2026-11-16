@@ -689,9 +689,41 @@ async function loadUserKeys(req: Request): Promise<EngineKeys> {
   }
 }
 
+/**
+ * The secret names this deployment holds. A browser cannot read function env, so without this the
+ * composer could only guess "unknown" for every engine the account has no key for — an honest guess,
+ * but useless. Naming the configured ones turns it into a fact.
+ *
+ * Names only: no value and no fragment of one ever leaves the function, and a name being present
+ * does not promise the provider will accept it (that is what key_prefer/key_fallback reports).
+ */
+const KNOWN_SECRETS = [
+  "EXA_API_KEY",
+  "TAVILY_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_CSE_ID",
+  "SHODAN_API_KEY",
+  "URLSCAN_API_KEY",
+  "SEARXNG_URL",
+  "GREPAPP_COOKIE",
+];
+
+export function configuredSecrets(read: (name: string) => string | undefined = (name) => Deno.env.get(name)): string[] {
+  return KNOWN_SECRETS.filter((name) => (read(name) ?? "").trim().length > 0);
+}
+
 export async function handleRequest(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  // GET is the configuration probe: which secrets exist here, so the composer can show a real key
+  // state before a search instead of "unknown"
+  if (req.method === "GET") {
+    return new Response(JSON.stringify({ configured: configuredSecrets() }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   try {

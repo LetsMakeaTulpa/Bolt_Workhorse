@@ -50,7 +50,7 @@ const UNWIRED = new Set([
 ]);
 
 const LABELS = [
-  [/you\.?com/i, 'you.com'],
+  [/you[\s._-]?com/i, 'you.com'],
   [/\bkimi\b|moonshot/i, 'kimi'],
   [/parallel/i, 'parallel'],
   [/codex/i, 'openai'],
@@ -138,7 +138,9 @@ for (const raw of sourceText.split(/\r?\n/)) {
   const explicit = line.match(/^([A-Z][A-Z0-9_]{2,})\s*[=:]\s*(\S.*)$/);
   if (explicit) {
     const [, name, value] = explicit;
-    entries.push({ value: value.trim(), provider: labelFor(name) ?? 'unknown', name, how: 'named' });
+    // an env-style name has no word boundaries (`EXA_API_KEY_1`), so try it as words too
+    const provider = labelFor(name) ?? labelFor(name.replace(/[_.-]+/g, ' ')) ?? 'unknown';
+    entries.push({ value: value.trim(), provider, name, how: 'named' });
     continue;
   }
 

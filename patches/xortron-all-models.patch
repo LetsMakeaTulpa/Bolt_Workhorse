@@ -1,0 +1,113 @@
+diff --git a/fieldwork-search/README.md b/fieldwork-search/README.md
+index 5896e81..401295c 100644
+--- a/fieldwork-search/README.md
++++ b/fieldwork-search/README.md
+@@ -7,7 +7,7 @@ This project lives in its own directory and branch inside the Tinkering reposito
+ ## Current build
+ 
+ - Featherless chat with server-side API-key handling and streamed tokens.
+-- Live model discovery from Featherless GET /v1/models.
++- Live model discovery from Featherless GET /v1/models. The picker lists every XORTRON model the connected account can see, with the configured defaults pinned to the top.
+ - Preferred model IDs: darkc0de/XORTRON-RICO-v3 and darkc0de/XORTRON-AgentRICO. These are experimental catalog entries; the app verifies availability against the connected account.
+ - Parallel Exa semantic search and SearXNG metasearch.
+ - Provider-specific normalization, URL deduplication, and weighted reciprocal-rank fusion.
+diff --git a/fieldwork-search/backend/main.py b/fieldwork-search/backend/main.py
+index c0abe33..767fcc1 100644
+--- a/fieldwork-search/backend/main.py
++++ b/fieldwork-search/backend/main.py
+@@ -28,6 +28,18 @@ app = FastAPI(title="FIELDWORK Research", docs_url=None, redoc_url=None)
+ STATIC_DIR = Path(__file__).parent / "static"
+ 
+ 
++def _matches_xortron(item: dict[str, Any]) -> bool:
++    for key in ("id", "name"):
++        if "xortron" in str(item.get(key, "")).casefold():
++            return True
++    return False
++
++
++def _rank_models(items: list[dict[str, Any]], preferred: str, agent: str) -> list[dict[str, Any]]:
++    order = {preferred: 0, agent: 1}
++    return sorted(items, key=lambda item: (order.get(str(item.get("id")), 2), str(item.get("id", "")).casefold()))
++
++
+ @app.on_event("startup")
+ def startup() -> None:
+     init_db()
+@@ -125,17 +137,23 @@ async def models(query: str = Query(default="", max_length=120)):
+         all_models = await FeatherlessProvider().list_models()
+         preferred, agent = settings.featherless_model_id, settings.xortron_agent_model_id
+         q = query.casefold().strip()
++        xortron_models = [item for item in all_models if _matches_xortron(item)]
+         if q:
+             candidates = [item for item in all_models if q in str(item.get("id", "")).casefold()
+-                          or q in str(item.get("name", "")).casefold()][:100]
++                          or q in str(item.get("name", "")).casefold()]
++            candidates = _rank_models(candidates, preferred, agent)[:100]
+         else:
+-            candidates = [item for item in all_models if item.get("id") in {preferred, agent}]
+-            if not candidates:
+-                candidates = [item for item in all_models if "xortron" in str(item.get("id", "")).casefold()][:30]
++            # Every XORTRON entry in the connected account's catalog, configured defaults first.
++            merged = {str(item.get("id")): item for item in xortron_models}
++            for item in all_models:
++                if str(item.get("id")) in {preferred, agent}:
++                    merged.setdefault(str(item.get("id")), item)
++            candidates = _rank_models(list(merged.values()), preferred, agent)
+         ids = {str(item.get("id")) for item in all_models}
+         return {"configured": True, "preferred_model": preferred, "agent_model": agent,
+                 "preferred_available": preferred in ids, "agent_available": agent in ids,
+-                "models": candidates, "total_models": len(all_models)}
++                "models": candidates, "xortron_count": len(xortron_models),
++                "total_models": len(all_models)}
+     except Exception as exc:
+         logger.exception("Featherless model discovery failed")
+         return {"configured": True, "preferred_model": settings.featherless_model_id,
+diff --git a/fieldwork-search/backend/static/app.js b/fieldwork-search/backend/static/app.js
+index bdb85bc..90b5d68 100644
+--- a/fieldwork-search/backend/static/app.js
++++ b/fieldwork-search/backend/static/app.js
+@@ -102,12 +102,12 @@ async function loadModels(query) {
+     }
+     $("modelStatus").textContent = data.error
+       ? "Model lookup warning: " + data.error
+-      : String(data.total_models || "Catalog") + " models returned. RICO v3 " +
++      : String(data.total_models || "Catalog") + " models in catalog; " +
++        String(data.xortron_count ?? (data.models || []).length) + " XORTRON models available. RICO v3 " +
+         (data.preferred_available ? "found" : "not found") + "; AgentRICO " +
+         (data.agent_available ? "found" : "not found") + ".";
+-    if (data.preferred_available) state.model = data.preferred_model;
+-    ensureModelOption(state.model);
+-    $("modelSelect").value = state.model;
++    if (!query && data.preferred_available) state.model = data.preferred_model;
++    renderModelOptions(data.models || []);
+     $("modelResults").innerHTML = (data.models || []).map((item) =>
+       '<div class="model-result"><span>' + escapeHtml(item.name || item.id) +
+       '<br><small>' + escapeHtml(item.id) + '</small></span>' +
+@@ -117,13 +117,19 @@ async function loadModels(query) {
+     $("modelStatus").textContent = error.message;
+   }
+ }
+-function ensureModelOption(id) {
+-  if (![...$("modelSelect").options].some((option) => option.value === id)) {
+-    const option = document.createElement("option");
+-    option.value = id;
+-    option.textContent = id.includes("Agent") ? "XORTRON AgentRICO" : "XORTRON RICO v3";
+-    $("modelSelect").append(option);
+-  }
++function modelLabel(id) {
++  const name = String(id || "").split("/").pop() || String(id || "");
++  return name.replace(/[-_]+/g, " ").replace(/xortron/ig, "XORTRON").trim();
++}
++function renderModelOptions(models) {
++  const select = $("modelSelect");
++  const ids = [...select.options].map((option) => option.value);
++  models.forEach((item) => { if (item.id && !ids.includes(item.id)) ids.push(item.id); });
++  if (state.model && !ids.includes(state.model)) ids.unshift(state.model);
++  select.innerHTML = ids.map((id) =>
++    '<option value="' + escapeHtml(id) + '">' + escapeHtml(modelLabel(id)) + "</option>"
++  ).join("");
++  select.value = state.model;
+ }
+ async function loadConversations() {
+   const response = await apiFetch("/api/conversations?archived=" + state.archived);

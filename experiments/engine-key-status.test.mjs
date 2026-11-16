@@ -1,7 +1,8 @@
 // Whether the composer can tell an engine is unusable before it runs.
 // Run: bash scripts/smoke.sh, which bundles both modules inside the project (so their external
 // `react` resolves) and sets KEYSTATUS_MODULE and KEYROW_MODULE to them
-import { tmpPath } from './lib/build.mjs';
+import { bundle, tmpPath } from './lib/build.mjs';
+import { mkdirSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
@@ -146,6 +147,52 @@ if (process.env.KEYROW_MODULE) {
 
   const empty = renderToStaticMarkup(React.createElement(EngineKeyRow, { engines: [], storedKeys: [] }));
   check('render: nothing selected renders nothing', empty === '', JSON.stringify(empty));
+}
+
+// 11. the lane yield strip. Two kinds of loss, two kinds of chip: a lane that answered with nothing
+// at all, and a lane that answered but had results thrown away — the second is the one that has to
+// be openable, because a count on its own cannot be judged.
+{
+  // smoke builds this so a bundling error fails the step it belongs to; run standalone and it builds
+  // itself, in the project, so an external `react` resolves to the copy the render uses
+  const out = process.env.LANE_MODULE ?? 'node_modules/.cache/fieldwork/lane-yield-row.mjs';
+  if (!process.env.LANE_MODULE) {
+    mkdirSync('node_modules/.cache/fieldwork', { recursive: true });
+    bundle('src/components/LaneYieldRow.tsx', out, ['--jsx=automatic', '--external=react', '--external=react-dom']);
+  }
+
+  const React = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const laneModule = process.env.LANE_MODULE ? out : `${process.cwd()}/${out}`.replaceAll('\\', '/');
+  const { LaneYieldRow } = await import(asUrl(laneModule));
+
+  const render = (props) => renderToStaticMarkup(React.createElement(LaneYieldRow, props));
+  const mixed = render({
+    laneYield: [
+      { lane: 'exa', engine: 'exa', returned: 5, kept: 3, offTopic: 2, dropped: [{ title: 'Roman Republic', rel: 0 }] },
+      { lane: 'tavily', engine: 'tavily', returned: 0, kept: 0, offTopic: 0, dropped: [] },
+    ],
+  });
+
+  check('render: a wasted lane shows kept out of returned', /Exa[\s\S]{0,120}3\/5/.test(mixed));
+  check('render: the wasted chip is a collapsed disclosure button', /<button[^>]*aria-expanded="false"/.test(mixed));
+  check(
+    'render: its tooltip says how many were dropped of how many',
+    /title="2 of 5 results from Exa were dropped/.test(mixed),
+  );
+  check('render: a dead lane says no results rather than 0/0', /Tavily[\s\S]{0,120}no results/.test(mixed));
+  check('render: the dead lane is not a button', !/no results<\/span>\s*<\/button>/.test(mixed));
+  check('render: the strip labels itself', /Lane yield/.test(mixed));
+  check('render: dropped titles stay hidden until the chip is opened', !/Roman Republic/.test(mixed));
+
+  const quiet = render({ laneYield: [{ lane: 'exa', engine: 'exa', returned: 4, kept: 4, offTopic: 0, dropped: [] }] });
+  check('render: a clean run renders nothing', quiet === '', JSON.stringify(quiet));
+
+  const explained = render({
+    laneYield: [{ lane: 'tavily', engine: 'tavily', returned: 0, kept: 0, offTopic: 0, dropped: [] }],
+    issues: [{ engine: 'tavily', name: 'Tavily', status: 'missing_key', label: 'missing key', detail: '', severity: 'warning' }],
+  });
+  check('render: an engine already reported as broken is not also called dead', !/no results/.test(explained), explained);
 }
 
 const failed = results.filter((result) => !result.ok);

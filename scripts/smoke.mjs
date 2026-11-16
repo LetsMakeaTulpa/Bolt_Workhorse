@@ -119,12 +119,15 @@ if (existsSync(join('node_modules', 'react-test-renderer'))) {
   // inside the project, so an external `react` resolves to the copy the test renders with
   const status = join(dir, 'engine-key-status.mjs');
   const row = join(dir, 'engine-key-row.mjs');
+  const lane = join(dir, 'lane-yield-row.mjs');
   try {
     bundle('src/lib/engineKeyStatus.ts', status);
     bundle('src/components/EngineKeyRow.tsx', row, ['--jsx=automatic', '--external:react', '--external:react-dom']);
+    bundle('src/components/LaneYieldRow.tsx', lane, ['--jsx=automatic', '--external:react', '--external:react-dom']);
     nodeTest('engine key status', 'experiments/engine-key-status.test.mjs', {
       KEYSTATUS_MODULE: asModulePath(status),
       KEYROW_MODULE: asModulePath(row),
+      LANE_MODULE: asModulePath(lane),
     });
   } catch (err) {
     failed.push('engine key status');

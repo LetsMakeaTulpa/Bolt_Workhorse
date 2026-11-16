@@ -143,6 +143,31 @@ if (existsSync(join('node_modules', 'react-test-renderer'))) {
 // ── 4j–4n. the answer contract, the empty page, prompts, ranking, searxng ────
 nodeTest('system prompt', 'experiments/system-prompt.test.mjs');
 nodeTest('empty result', 'experiments/empty-result.test.mjs');
+
+// ── 4o. the gap report in the bubble, not just the string it builds ──────────
+{
+  const dir = join('node_modules', '.cache', 'fieldwork');
+  mkdirSync(dir, { recursive: true });
+  const bubble = join(dir, 'message-bubble.mjs');
+  const empty = join(dir, 'empty-result.mjs');
+  try {
+    // react-markdown's entity decoder resolves to a DOM build that touches `document` on import
+    bundle('src/components/MessageBubble.tsx', bubble, [
+      '--jsx=automatic',
+      '--external:react',
+      '--external:react-dom',
+      '--alias:decode-named-character-reference=./node_modules/decode-named-character-reference/index.js',
+    ]);
+    bundle('src/lib/emptyResult.ts', empty);
+    nodeTest('empty result bubble', 'experiments/empty-result-bubble.test.mjs', {
+      BUBBLE_MODULE: asModulePath(bubble),
+      EMPTY_MODULE: asModulePath(empty),
+    });
+  } catch (err) {
+    failed.push('empty result bubble');
+    console.log(`→ empty result bubble\n  FAILED\n    ${err.message}`);
+  }
+}
 nodeTest('prompt variant', 'experiments/prompt-variant.test.mjs');
 nodeTest('ranking compare', 'experiments/ranking-compare.test.mjs');
 // --check fails on an nDCG or margin regression against flat trust

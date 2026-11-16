@@ -27,7 +27,7 @@ npm run smoke -- --live  # + read-only probes against the live Supabase project 
 
 Rules a change has to respect:
 
-- **Green means every check that ran passed, 0 failed** — 23 on a full install (19 that always run,
+- **Green means every check that ran passed, 0 failed** — 25 on a full install (21 that always run,
   plus 4 database checks). The script exits non-zero if anything fails; do not merge on a red run,
   and do not treat a red run as "probably the environment" without reading the log. Failing checks
   print the last 20 lines of their output.
@@ -107,6 +107,7 @@ Ranking is the part most likely to regress invisibly, so it has its own gate ins
 node experiments/ranking-harness.mjs --check     # fails on nDCG or margin regression vs flat trust
 node experiments/ranking-harness.mjs --compare spec.json   # score your own before/after weights
 node experiments/ranking-sweep.mjs --ablate      # what each constant buys
+node experiments/ranking-sweep.mjs --assert-separation  # fails if a constant stops separating
 node experiments/ranking-sweep.mjs --stability    # leave-one-out across queries
 ```
 

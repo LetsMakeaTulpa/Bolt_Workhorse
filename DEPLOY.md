@@ -289,7 +289,7 @@ belong to a different project than the one just deployed.
 ```text
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
-[ ] npm run smoke green (24 checks, 0 failed, no skips)
+[ ] npm run smoke green (25 checks, 0 failed, no skips)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

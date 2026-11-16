@@ -141,8 +141,18 @@ constant to show what removing it costs (`--ablate`), and checks leave-one-out s
 (`--stability`). It also reports `margin`, the order-free gap between the best answer and the best
 lesser result:
 nDCG cannot see a weighting that leaves a competing result ten times further behind without
-changing which result is first, and that safety is what intent weighting mostly buys., `web-engine-pipeline` (handler
-statuses end to end), `provider-keys`, `followups`, plus PGlite suites for RLS and rate limits.
+changing which result is first, and that safety is what intent weighting mostly buys.
+Also `web-engine-pipeline` (handler statuses end to end), `provider-keys`, `followups`, `searxng`
+(the keyless meta-engine, driven against instances that answer HTML or not at all), and the PGlite
+suites for RLS and rate limits.
+
+Search control has its own pair. `search-abort` proves a cancelled or superseded run stops its
+requests rather than merely having its answer dropped. `use-search-supersede` mounts the real
+`useSearch` hook with `react-test-renderer` and drives it through the four ways a run loses the
+screen — a newer search, a cancel, an engine-set change, and an engine that ignores its abort — each
+of which must leave the newer list, the query label and the sources table untouched. Both build
+their bundles through `experiments/lib/build.mjs`, which is why the gate runs on Windows as well as
+on Linux and macOS.
 
 `scripts/verify-engines.mjs` probes the deployed function. `scripts/dev-preview.sh` restarts the
 preview server for the current hostname.

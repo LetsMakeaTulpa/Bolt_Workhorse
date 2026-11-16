@@ -195,18 +195,35 @@ query.
       runtime dependencies at all.
 - [ ] No secrets, key files or local state in the diff.
 
-## Running the checks on Windows
+## Temp paths, and running the checks on Windows
 
-They run there. The suites take temp paths from `os.tmpdir()` through `experiments/lib/build.mjs`,
-build with the esbuild that ships with vite under `node` (never `npx`), and import bundles by
-`file://` URL. `scripts/smoke.sh` asks Node where temp actually is and passes absolute paths, and
-one suite renders a component against the project's own `react` from `node_modules/.cache/`.
+Every harness resolves its temp paths through the platform, so the gate runs on Windows as well as
+Linux and macOS. There are exactly two patterns, and a new check should use one of them rather than
+writing a path of its own:
 
-If you add a check, use the helper rather than a literal `/tmp` and rather than a fresh copy of the
-build commands: that duplication is what left this repository unverifiable on Windows for a while,
-with each suite failing for its own environment reason. A suite that needs a bundle from outside
-still accepts a `*_MODULE` override (`API_MODULE`, `PARSERS_MODULE`, `FUSION_MODULE`, `SEARXNG_MODULE`,
-and so on) and builds its own when none is set.
+- **`experiments/lib/build.mjs`** is the normal one. `tmpPath(name)` returns an absolute path in
+  `os.tmpdir()`, `bundle(entry, out, extra)` builds with the esbuild that ships with vite run under
+  `node`, `bundleSync` returns the child's result for tests that assert on a failure, `asUrl` turns a
+  path into the `file://` URL that `import()` needs, and `installWebSocketStub` supplies the one
+  member supabase-js touches at import on Node 20. Every suite that bundles real source uses these;
+  `npm run engines:verify` does too.
+- **`mkdtempSync(join(tmpdir(), …))`** when a check owns a scratch directory rather than a single
+  bundle. `experiments/ranking-compare.test.mjs` makes one, writes its spec files there and hands the
+  path to `experiments/ranking-harness.mjs` through `RANKING_MODULE`.
+
+No Node harness spawns `npx` or names a literal `/tmp` at runtime: `/tmp` is `C:\tmp` to Node but
+not to a native binary, and `npx` goes through `cmd.exe`, which strips the quotes out of `--define`
+and turns the value into invalid JSON. `scripts/smoke.sh` asks Node where temp actually is and
+passes absolute paths; `experiments/use-search-supersede.test.mjs` and
+`experiments/engine-key-status.test.mjs` are the deliberate exception, bundling into
+`node_modules/.cache/fieldwork/` because a `react` kept external has to resolve from the project's
+own `node_modules`.
+
+A harness that can take a bundle built elsewhere still accepts a `*_MODULE` (or `*_DIR`) override —
+`API_MODULE`, `PIPELINE_MODULE`, `RANKING_MODULE`, `PARSERS_MODULE`, `SEARXNG_MODULE`, `BADGES_DIR`,
+`ABORT_DIR`, `USESEARCH_DIR` and the rest — and builds its own when none is set. Use the helper
+rather than a fresh copy of the build commands: that duplication is what left this repository
+unverifiable on Windows for a while, with each suite failing for its own local reason.
 
 Never work around a red run by removing assertions, and never report a check as passing when it
 could not execute.

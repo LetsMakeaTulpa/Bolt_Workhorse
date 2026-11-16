@@ -12,7 +12,8 @@
     "smoke": "node scripts/smoke.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "engines:verify": "node scripts/verify-engines.mjs"
+    "engines:verify": "node scripts/verify-engines.mjs",
+    "migrations:verify": "node scripts/verify-migrations.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

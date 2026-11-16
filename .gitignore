@@ -17,3 +17,7 @@ artifacts/
 
 # Supabase CLI cache
 supabase/.temp/
+
+# local Supabase credentials: never commit these
+.env
+.env.local

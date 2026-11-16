@@ -102,6 +102,11 @@ nodeTest('follow-up parsing', 'experiments/followups.test.mjs');
 nodeTest('provider key parsing', 'experiments/provider-keys.test.mjs');
 nodeTest('ranking badges', 'experiments/rank-badges.test.mjs');
 
+// ── 4h. every ranking constant must still be distinguishable from its neutral value ─────────
+// The ablation is what says a constant earns its place; if the fixture drifts until a constant
+// changes nothing, that verdict is unearned and the constant could be set to anything.
+run('ranking constants still separate', process.execPath, ['experiments/ranking-sweep.mjs', '--assert-separation']);
+
 // ── 4g. a superseded search stops its requests instead of finishing ──────────
 nodeTest('search abort', 'experiments/search-abort.test.mjs');
 

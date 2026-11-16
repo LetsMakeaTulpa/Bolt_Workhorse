@@ -6,6 +6,8 @@
 //   node experiments/ranking-sweep.mjs             # sensitivity tables
 //   node experiments/ranking-sweep.mjs --ablate    # what each constant buys
 //   node experiments/ranking-sweep.mjs --stability # leave-one-out check on the chosen values
+//   node experiments/ranking-sweep.mjs --assert-separation  # exit 1 if a constant no longer moves
+//                                                          anything against its neutral value
 //
 // Twenty-eight queries is still a small sample, so a value is only reported as "earning its place"
 // when it improves the tuned queries without giving up ground on the held-out classes.
@@ -17,7 +19,10 @@ import { pathToFileURL } from 'node:url';
 
 const args = process.argv.slice(2);
 const STABILITY = args.includes('--stability');
-const ABLATE = args.includes('--ablate');
+// `--assert-separation` is the gate: it needs the ablation table, and it exits non-zero when a
+// constant has stopped being distinguishable from the value it is compared against
+const ASSERT_SEPARATION = args.includes('--assert-separation');
+const ABLATE = args.includes('--ablate') || ASSERT_SEPARATION;
 
 const FIXTURE_PATH = 'experiments/fixtures/ranking-queries.json';
 // run the local esbuild under node directly: `npx` cannot be spawned through cmd.exe on Windows
@@ -104,7 +109,15 @@ function evaluate({ deltas = {}, fusion = {} }) {
       weights: weightsFor(entry.query, deltas),
       ...fusion,
     });
-    per.push({ id: entry.id, class: entry.class, ndcg: ndcg(ranked, judgements), margin: margin(ranked, judgements) });
+    per.push({
+      id: entry.id,
+      class: entry.class,
+      ndcg: ndcg(ranked, judgements),
+      margin: margin(ranked, judgements),
+      // the ranked order itself, so an ablation can say whether a constant reorders anything or
+      // only nudges a score
+      order: ranked.map((item) => canonicalUrl(item.url)).join('|'),
+    });
   }
   return {
     per,
@@ -215,10 +228,13 @@ if (ABLATE) {
     { label: 'tavily + fresh .45', neutral: '0', cfg: { deltas: { tavilyFresh: 0 } } },
 
   ];
+  const separations = [];
   for (const { label, neutral, cfg } of ABLATIONS) {
     const without = evaluate(cfg);
     const dn = current.ndcg - without.ndcg;
     const dm = current.margin - without.margin;
+    const reordered = current.per.filter((row, index) => row.order !== without.per[index].order).length;
+    separations.push({ label, neutral, reordered, dn, dm });
     const verdict = dn > 0.002
       ? 'earns its place (order)'
       : dm > 0.01
@@ -231,6 +247,29 @@ if (ABLATE) {
     console.log(
       `  ${label.padEnd(21)} ${neutral.padEnd(13)} ${without.ndcg.toFixed(3)}  ${(dn >= 0 ? '+' : '') + dn.toFixed(3)}  ${without.margin.toFixed(3)}  ${(dm >= 0 ? '+' : '') + dm.toFixed(3)}   ${verdict}`,
     );
+  }
+
+  // The gate: a constant whose neutral value produces every same ranking and the same mean margin
+  // is not "subtle", it is untested — the fixture can no longer tell the two configurations apart,
+  // so any value chosen for it is arbitrary and the ablation's "earns its place" is unearned.
+  if (ASSERT_SEPARATION) {
+    const reordering = separations.filter((row) => row.reordered > 0).length;
+    console.log(
+      `\nseparation: ${separations.length} constants · ${reordering} reorder at least one query · ${separations.length - reordering} move only a score`,
+    );
+    const silent = separations.filter((row) => row.reordered === 0 && Math.abs(row.dn) <= 1e-6 && Math.abs(row.dm) <= 1e-6);
+    for (const row of separations.filter((item) => item.reordered === 0 && !silent.includes(item))) {
+      console.log(`  · ${row.label} changes no ordering, only the margin (Δ${row.dm.toFixed(3)})`);
+    }
+    if (silent.length > 0) {
+      for (const row of silent) {
+        console.error(
+          `  ✗ ${row.label} is indistinguishable from ${row.neutral}: 0 queries reordered, ΔnDCG ${row.dn.toFixed(3)}, Δmargin ${row.dm.toFixed(3)} — nothing on this fixture tests it`,
+        );
+      }
+      process.exit(1);
+    }
+    console.log('  ✓ every constant differs from its neutral value');
   }
 }
 

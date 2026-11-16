@@ -60,19 +60,19 @@ in this order there is no degraded window at all:
 git status --porcelain          # expect only the changes you intend to deploy
 npm run build                   # tsc -b && vite build
 npx tsc --noEmit -p tsconfig.json
-bash scripts/smoke.sh           # needs bash + /tmp; see the note below
+npm run smoke                   # the gate; runs anywhere Node does, Windows included
 ```
 
-`scripts/smoke.sh` bundles each check to `/tmp`. On Windows that resolves to `C:\tmp` while
-esbuild writes to `%TEMP%`, so most checks fail with `ERR_MODULE_NOT_FOUND` on untouched files —
-that is the host, not the code. Run the suite in WSL or Linux and require **all checks green with
-0 failed** before deploying.
+Require **all checks green with 0 failed** before deploying, on whichever platform you are on. The
+runner is `scripts/smoke.mjs`: it takes temp paths from `os.tmpdir()`, builds through
+`experiments/lib/build.mjs`, and never touches the shell, so it needs no WSL and no Git Bash. A
+`SKIPPED` line is not green — it means a test-only package could not be installed or the live probe
+could not run.
 
-Individually runnable checks that do work on Windows (bundles land in `node_modules/.cache`):
+One check can be run on its own, which is what to do while iterating:
 
 ```bash
-PIPELINE_MODULE="$PWD/node_modules/.cache/fieldwork/pipeline.mjs" \
-  node experiments/web-engine-pipeline.test.mjs
+node experiments/web-engine-pipeline.test.mjs    # bundles its own copy of the handler
 ```
 
 ---
@@ -289,7 +289,7 @@ belong to a different project than the one just deployed.
 ```text
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
-[ ] scripts/smoke.sh green in WSL/Linux (17 checks, 0 failed)
+[ ] npm run smoke green (23 checks, 0 failed, no skips)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

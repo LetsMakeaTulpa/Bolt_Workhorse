@@ -1,7 +1,39 @@
 import { useState, useRef, useEffect } from 'react';
 import { Search, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square } from 'lucide-react';
 import { DORK_ENGINE_NOTE, DORK_OPERATORS, DORK_TEMPLATES } from '../lib/dorks';
-import { ENGINE_CATALOG, ENGINE_GROUPS, SEARCH_SCOPES, matchScope } from '../lib/engines';
+import { ENGINE_CATALOG, ENGINE_GROUPS, SEARCH_SCOPES, matchScope, type EngineIssue } from '../lib/engines';
+import { engineKeyStatus, type KeyState } from '../lib/engineKeyStatus';
+
+/**
+ * Key state inside the picker, so an engine can be judged before it is selected. The row under the
+ * composer only covers what is already selected; this is the same status, one click earlier.
+ */
+const KEY_TEXT_TONE: Record<KeyState, string> = {
+  ready: 'text-olive',
+  deployment: 'text-olive',
+  keyless: 'text-text-muted',
+  optional: 'text-text-muted',
+  unknown: 'text-text-muted',
+  partial: 'text-warning',
+  missing: 'text-warning',
+  rejected: 'text-warning',
+  unused: 'text-accent',
+};
+
+const KEY_DOT_TONE: Record<KeyState, string> = {
+  ready: 'bg-olive',
+  deployment: 'bg-olive/60',
+  keyless: 'bg-text-muted/30',
+  optional: 'bg-text-muted/40',
+  unknown: 'bg-text-muted/70',
+  partial: 'bg-warning',
+  missing: 'bg-warning',
+  rejected: 'bg-warning',
+  unused: 'bg-accent',
+};
+
+/** States worth spelling out in a row this narrow; the rest speak through the dot and tooltip. */
+const KEY_SHOW_TEXT = new Set<KeyState>(['ready', 'deployment', 'optional', 'partial', 'missing', 'rejected', 'unused']);
 
 export const SEARCH_ENGINES = ENGINE_CATALOG.map((engine) => ({
   id: engine.id,
@@ -27,6 +59,12 @@ interface SearchBarProps {
   searching?: boolean;
   /** stop the running search without starting another one */
   onCancel?: () => void;
+  /** secret names this account has stored — names only, never values */
+  storedKeys?: string[];
+  /** the last run's engine status: the only evidence about deployment-level secrets */
+  issues?: EngineIssue[];
+  /** secret names the deployment reported holding; null when it could not be asked */
+  deploymentSecrets?: string[] | null;
 }
 
 export function SearchBar({
@@ -41,6 +79,9 @@ export function SearchBar({
   disabled,
   searching = false,
   onCancel,
+  storedKeys = [],
+  issues = [],
+  deploymentSecrets = null,
 }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -100,6 +141,8 @@ export function SearchBar({
   };
 
   const templateGroups = [...new Set(DORK_TEMPLATES.map((t) => t.group))];
+  const stored = new Set(storedKeys);
+  const deployment = deploymentSecrets ? new Set(deploymentSecrets) : null;
 
   return (
     <div className="mb-1">
@@ -210,6 +253,7 @@ export function SearchBar({
                     </div>
                     {SEARCH_ENGINES.filter((engine) => engine.group === group).map((engine) => {
                       const active = engines.includes(engine.id);
+                      const keyStatus = engineKeyStatus(engine.id, stored, issues, deployment);
                       return (
                         <button
                           key={engine.id}
@@ -230,7 +274,17 @@ export function SearchBar({
                               </span>
                             )}
                           </span>
-                          {active && <Check size={13} className="flex-shrink-0 text-accent" />}
+                          <span className="flex flex-shrink-0 items-center gap-1">
+                            {keyStatus && (
+                              <span title={keyStatus.detail} className="flex items-center gap-1 whitespace-nowrap">
+                                <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${KEY_DOT_TONE[keyStatus.state]}`} />
+                                {KEY_SHOW_TEXT.has(keyStatus.state) && (
+                                  <span className={`text-[9px] ${KEY_TEXT_TONE[keyStatus.state]}`}>{keyStatus.text}</span>
+                                )}
+                              </span>
+                            )}
+                            {active && <Check size={13} className="flex-shrink-0 text-accent" />}
+                          </span>
                         </button>
                       );
                     })}

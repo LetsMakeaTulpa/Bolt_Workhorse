@@ -12,6 +12,7 @@ import { KEYS_FOR_ENGINE } from './providerKeys';
 export type KeyState =
   | 'keyless' // never needs a key
   | 'ready' // every required name stored by this account
+  | 'deployment' // nothing stored here, but the deployment holds every required name
   | 'partial' // some stored (Google needs both a key and a CSE id)
   | 'unused' // all stored, yet the function still reported missing_key
   | 'rejected' // stored, but the provider refused it and the deployment key answered
@@ -42,6 +43,8 @@ export function engineKeyStatus(
   engineId: string,
   stored: Set<string>,
   issues: EngineIssue[] = [],
+  /** secret names the deployment reported holding; null when it could not be asked */
+  deployment: Set<string> | null = null,
 ): EngineKeyStatus | null {
   const def = ENGINE_CATALOG.find((engine) => engine.id === engineId);
   if (!def) return null;
@@ -75,6 +78,16 @@ export function engineKeyStatus(
     }
     return { ...base, state: 'ready', text: 'your key', detail: `Using your ${required.join(' + ')}.` };
   }
+  // the deployment's own secrets are a fact now, not a guess: nothing personal stored still means
+  // the engine answers
+  if (deployment && required.every((name) => deployment.has(name))) {
+    return {
+      ...base,
+      state: 'deployment',
+      text: 'deployment key',
+      detail: `This deployment holds ${required.join(' + ')}, so this engine answers with it rather than with a personal key${kept.length > 0 ? ' (yours is saved too)' : ''}.`,
+    };
+  }
   if (kept.length > 0) {
     return {
       ...base,
@@ -102,8 +115,9 @@ export function engineKeyRow(
   engines: string[],
   stored: Set<string>,
   issues: EngineIssue[] = [],
+  deployment: Set<string> | null = null,
 ): EngineKeyStatus[] {
   return engines
-    .map((engine) => engineKeyStatus(engine, stored, issues))
+    .map((engine) => engineKeyStatus(engine, stored, issues, deployment))
     .filter((status): status is EngineKeyStatus => status !== null);
 }

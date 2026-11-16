@@ -228,7 +228,12 @@ export default function App() {
   const abortStream = useCallback(() => streamRunRef.current?.abort(), []);
 
   // names only: the composer shows which providers are configured, never a value
-  const { names: storedKeyNames, unavailable: keysUnavailable, refresh: refreshKeyNames } = useEngineKeys(session?.user?.id);
+  const {
+    names: storedKeyNames,
+    unavailable: keysUnavailable,
+    deployment: deploymentKeyNames,
+    refresh: refreshKeyNames,
+  } = useEngineKeys(session?.user?.id);
 
   const {
     results: searchResults,
@@ -624,6 +629,7 @@ export default function App() {
               onRunLane={handleRunLane}
               onCancelSearch={cancelSearch}
               storedKeyNames={storedKeyNames}
+              deploymentKeyNames={deploymentKeyNames}
               keysUnavailable={keysUnavailable}
               onOpenSettings={() => setShowSettings(true)}
               searchLabel={searchStatus}

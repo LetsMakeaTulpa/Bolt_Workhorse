@@ -73,6 +73,26 @@ const stateOf = (engine, keys, issues = []) => engineKeyStatus(engine, keys, iss
   check('a fallback with no stored key does not claim one', noPersonalKey?.state === 'unknown', noPersonalKey?.state);
 }
 
+// 5d. when the deployment says it holds the secret, "unknown" becomes a fact
+{
+  const held = stored('EXA_API_KEY');
+  const viaDeployment = engineKeyStatus('exa', stored(), [], held);
+  check('a deployment-held key reports deployment', viaDeployment?.state === 'deployment', viaDeployment?.state);
+  check('deployment text says whose key it is', /deployment key/.test(viaDeployment?.text ?? ''), viaDeployment?.text);
+
+  const halfPair = engineKeyStatus('google', stored(), [], stored('GOOGLE_API_KEY'));
+  check('half a deployment pair is not deployment-ready', halfPair?.state === 'unknown', halfPair?.state);
+
+  const personal = engineKeyStatus('exa', stored('EXA_API_KEY'), [], held);
+  check('a personal key outranks the deployment copy', personal?.state === 'ready', personal?.state);
+
+  const askedButSilent = engineKeyStatus('exa', stored(), [], null);
+  check('no answer from the function stays unknown', askedButSilent?.state === 'unknown', askedButSilent?.state);
+
+  const forwarded = engineKeyRow(['tavily'], stored(), [], stored('TAVILY_API_KEY'));
+  check('engineKeyRow forwards the deployment set', forwarded[0]?.state === 'deployment', forwarded[0]?.state);
+}
+
 // 6. urlscan works anonymously; a key only raises the limit
 {
   const anonymous = stateOf('urlscan', stored());

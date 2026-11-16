@@ -9,6 +9,7 @@ import type { EngineIssue } from '../lib/engines';
  */
 const TONE: Record<KeyState, string> = {
   ready: 'border-olive/40 bg-olive-subtle text-olive',
+  deployment: 'border-olive/30 bg-olive-subtle/50 text-olive',
   keyless: 'border-border-subtle text-text-muted',
   optional: 'border-border-subtle text-text-muted',
   unknown: 'border-border-subtle text-text-secondary',
@@ -20,6 +21,7 @@ const TONE: Record<KeyState, string> = {
 
 const DOT: Record<KeyState, string> = {
   ready: 'bg-olive',
+  deployment: 'bg-olive/60',
   keyless: 'bg-text-muted/40',
   optional: 'bg-text-muted/40',
   unknown: 'bg-text-muted/70',
@@ -36,13 +38,22 @@ interface EngineKeyRowProps {
   storedKeys: string[];
   /** the last run's status strip: the only evidence about deployment-level secrets */
   issues?: EngineIssue[];
+  /** secret names the deployment reported holding; null when it could not be asked */
+  deploymentSecrets?: string[] | null;
   /** the keys table has not been applied to this project yet */
   unavailable?: boolean;
   onOpenSettings?: () => void;
 }
 
-export function EngineKeyRow({ engines, storedKeys, issues = [], unavailable = false, onOpenSettings }: EngineKeyRowProps) {
-  const row = engineKeyRow(engines, new Set(storedKeys), issues);
+export function EngineKeyRow({
+  engines,
+  storedKeys,
+  issues = [],
+  deploymentSecrets = null,
+  unavailable = false,
+  onOpenSettings,
+}: EngineKeyRowProps) {
+  const row = engineKeyRow(engines, new Set(storedKeys), issues, deploymentSecrets ? new Set(deploymentSecrets) : null);
   if (row.length === 0 && !unavailable) return null;
 
   const needsAttention = row.filter(

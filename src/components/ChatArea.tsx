@@ -37,6 +37,8 @@ interface ChatAreaProps {
   onCancelSearch?: () => void;
   /** secret names this account has stored — names only, never values */
   storedKeyNames?: string[];
+  /** secret names the deployment holds; null when the function could not be asked */
+  deploymentKeyNames?: string[] | null;
   /** the per-account keys table is missing from the project */
   keysUnavailable?: boolean;
   onOpenSettings?: () => void;
@@ -67,6 +69,7 @@ export function ChatArea({
   onUseDorksChange,
   onCancelSearch,
   storedKeyNames,
+  deploymentKeyNames,
   keysUnavailable,
   onOpenSettings,
   onRetrySearch,
@@ -129,11 +132,15 @@ export function ChatArea({
             disabled={isStreaming}
             searching={isSearching || isStreaming}
             onCancel={onCancelSearch}
+            storedKeys={storedKeyNames ?? []}
+            issues={engineIssues}
+            deploymentSecrets={deploymentKeyNames ?? null}
           />
           <EngineKeyRow
             engines={engines}
             storedKeys={storedKeyNames ?? []}
             issues={engineIssues}
+            deploymentSecrets={deploymentKeyNames ?? null}
             unavailable={keysUnavailable}
             onOpenSettings={onOpenSettings}
           />

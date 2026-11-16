@@ -18,7 +18,7 @@ the browser bundle. Anything secret belongs on the search function (see [Secrets
 
 ## The gate
 
-`npm run smoke` is the merge gate. It builds, then runs every check in `scripts/smoke.sh`:
+`npm run smoke` is the merge gate. It builds, then runs every check in `scripts/smoke.mjs`:
 
 ```bash
 npm run smoke            # build + unit/db tests, no network
@@ -67,13 +67,17 @@ Rules a change has to respect:
    state, `WebSocket` on Node 20 (supabase-js constructs a realtime client at import).
 3. Print one `PASS`/`FAIL` line per assertion and `N/M assertions passed`, then
    `process.exit(failed.length ? 1 : 0)`.
-4. Register it in `scripts/smoke.sh` as a small function plus one comment saying what it protects:
+4. Register it in `scripts/smoke.mjs` as one line in the list, with a comment saying what it
+   protects. The runner is Node, so the step is the command it runs, not a shell function:
 
-   ```bash
-   search_abort() { node experiments/search-abort.test.mjs; }
-   # 4g. a superseded search stops its requests instead of finishing and overwriting
-   run "search abort" search_abort
+   ```js
+   // a superseded search stops its requests instead of finishing and overwriting
+   nodeTest('search abort', 'experiments/search-abort.test.mjs');
    ```
+
+   Use `run(name, command, args, { env })` when the command is not `node <script>` — `build` and
+   `ranking benchmark` do that — and `skip(name, reason)` for a check whose test-only package is
+   missing.
 
 5. Update the expected total in this document only after the check passes locally.
 
@@ -213,8 +217,8 @@ writing a path of its own:
 
 No Node harness spawns `npx` or names a literal `/tmp` at runtime: `/tmp` is `C:\tmp` to Node but
 not to a native binary, and `npx` goes through `cmd.exe`, which strips the quotes out of `--define`
-and turns the value into invalid JSON. `scripts/smoke.sh` asks Node where temp actually is and
-passes absolute paths; `experiments/use-search-supersede.test.mjs` and
+and turns the value into invalid JSON. `scripts/smoke.mjs` passes absolute paths and needs nothing
+from the shell, so the gate runs from `npm run smoke` on a plain Windows install; `experiments/use-search-supersede.test.mjs` and
 `experiments/engine-key-status.test.mjs` are the deliberate exception, bundling into
 `node_modules/.cache/fieldwork/` because a `react` kept external has to resolve from the project's
 own `node_modules`.

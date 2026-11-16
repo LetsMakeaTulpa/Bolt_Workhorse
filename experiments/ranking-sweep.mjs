@@ -8,6 +8,9 @@
 //   node experiments/ranking-sweep.mjs --stability # leave-one-out check on the chosen values
 //   node experiments/ranking-sweep.mjs --assert-separation  # exit 1 if a constant no longer moves
 //                                                          anything against its neutral value
+//   node experiments/ranking-sweep.mjs --calibrate          # what a real change to each constant
+//                                                          actually moves, smallest first — the
+//                                                          evidence behind the gate's tolerances
 //
 // Twenty-eight queries is still a small sample, so a value is only reported as "earning its place"
 // when it improves the tuned queries without giving up ground on the held-out classes.
@@ -23,6 +26,20 @@ const STABILITY = args.includes('--stability');
 // constant has stopped being distinguishable from the value it is compared against
 const ASSERT_SEPARATION = args.includes('--assert-separation');
 const ABLATE = args.includes('--ablate') || ASSERT_SEPARATION;
+const CALIBRATE = args.includes('--calibrate');
+
+/**
+ * What the separation gate calls no effect, and what it merely warns about.
+ *
+ * Calibrated with `--calibrate` rather than guessed: across every value the sweep evaluates, the
+ * smallest margin move a real change to a constant produces on this fixture is 0.0007, and a change
+ * that leaves the order untouched moves mean nDCG by 0.0000. A tolerance of 0.0005 therefore sits
+ * just under the fixture's resolution — below it the honest reading is "this fixture cannot see it",
+ * not "this constant does nothing". Ten tolerances up is the band worth warning about: passing today,
+ * one flat query away from failing.
+ */
+const SEPARATION_TOLERANCE = { ndcg: 0.0005, margin: 0.0005 };
+const NEAR_THRESHOLD = SEPARATION_TOLERANCE.margin * 10;
 
 const FIXTURE_PATH = 'experiments/fixtures/ranking-queries.json';
 // run the local esbuild under node directly: `npx` cannot be spawned through cmd.exe on Windows
@@ -153,6 +170,8 @@ const trainCount = queries.filter((row) => TRAIN.has(row.class)).length;
 console.log(`train = fresh+semantic (${trainCount} queries) · holdout = everything else (${queries.length - trainCount})\n`);
 
 const results = [];
+/** every value the sweep evaluated, with what it moved — the calibration's raw material */
+const sweeps = [];
 for (const grid of GRIDS) {
   console.log(`${grid.label} (current ${grid.defaultValue})`);
   console.log('  value   nDCG    Δ       margin  Δ       train   holdout');
@@ -167,10 +186,48 @@ for (const grid of GRIDS) {
     console.log(
       `  ${String(value).padEnd(6)} ${result.ndcg.toFixed(3)}  ${(dn >= 0 ? '+' : '') + dn.toFixed(3)}  ${result.margin.toFixed(3)}  ${(dm >= 0 ? '+' : '') + dm.toFixed(3)}   ${train.toFixed(3)}   ${holdout.toFixed(3)}${isDefault ? '   ← current' : ''}`,
     );
+    sweeps.push({
+      label: grid.label,
+      value,
+      isDefault,
+      dn,
+      dm,
+      reordered: result.per.filter((row, index) => row.order !== baseline.per[index].order).length,
+    });
     if (!best || result.ndcg > best.result.ndcg + 1e-9) best = { value, result, train, holdout };
   }
   results.push({ grid, best, baseline });
   console.log('');
+}
+
+// ── calibration: how small is a real change? ────────────────────────────────
+// The gate below has to call a constant "untested" without calling a quiet one untested by
+// mistake. That needs a floor: the smallest effect an actual change to a constant produces on this
+// fixture. Every non-default value the sweep already evaluated is exactly such a change, so sort
+// them by how little they moved and read the floor off the bottom of the table.
+if (CALIBRATE) {
+  console.log(`
+calibration: what a real change to a constant moves (smallest first)`);
+  console.log("  constant              value   nDCG Δ    margin Δ  reordered");
+  const ordered = [...sweeps]
+    .filter((row) => !row.isDefault)
+    .sort((a, b) => Math.abs(a.dn) - Math.abs(b.dn) || Math.abs(a.dm) - Math.abs(b.dm));
+  for (const row of ordered) {
+    console.log(
+      `  ${row.label.padEnd(21)} ${String(row.value).padEnd(7)} ${((row.dn >= 0 ? "+" : "") + row.dn.toFixed(4)).padEnd(9)} ${((row.dm >= 0 ? "+" : "") + row.dm.toFixed(4)).padEnd(9)} ${row.reordered}`,
+    );
+  }
+
+  const reordering = ordered.filter((row) => row.reordered > 0);
+  const quietestReorder = reordering.length ? Math.min(...reordering.map((row) => Math.abs(row.dn))) : 0;
+  const quietestMargin = ordered.length ? Math.min(...ordered.map((row) => Math.abs(row.dm))) : 0;
+  console.log(`
+  floor: the smallest change that still reorders a query moves nDCG by ${quietestReorder.toFixed(4)};`);
+  const clearance = quietestMargin / SEPARATION_TOLERANCE.margin;
+  console.log(
+    `         the smallest margin move from any change is ${quietestMargin.toFixed(4)}; the gate sits at ` +
+      `${SEPARATION_TOLERANCE.margin} (${clearance.toFixed(1)}x below it), warning from ${NEAR_THRESHOLD}`,
+  );
 }
 
 // ── proposed combination ────────────────────────────────────────────────────
@@ -257,9 +314,19 @@ if (ABLATE) {
     console.log(
       `\nseparation: ${separations.length} constants · ${reordering} reorder at least one query · ${separations.length - reordering} move only a score`,
     );
-    const silent = separations.filter((row) => row.reordered === 0 && Math.abs(row.dn) <= 1e-6 && Math.abs(row.dm) <= 1e-6);
+    // tolerances: see SEPARATION_TOLERANCE below --calibrate is what set them
+    const silent = separations.filter(
+      (row) =>
+        row.reordered === 0 &&
+        Math.abs(row.dn) <= SEPARATION_TOLERANCE.ndcg &&
+        Math.abs(row.dm) <= SEPARATION_TOLERANCE.margin,
+    );
     for (const row of separations.filter((item) => item.reordered === 0 && !silent.includes(item))) {
       console.log(`  · ${row.label} changes no ordering, only the margin (Δ${row.dm.toFixed(3)})`);
+      if (Math.abs(row.dn) > NEAR_THRESHOLD || Math.abs(row.dm) > NEAR_THRESHOLD) continue;
+      console.log(
+        `  ! ${row.label} sits near the threshold (ΔnDCG ${row.dn.toFixed(4)}, Δmargin ${row.dm.toFixed(4)}): the smallest effect this fixture resolves is ~0.0007, so one more flat query would make it untestable`,
+      );
     }
     if (silent.length > 0) {
       for (const row of silent) {

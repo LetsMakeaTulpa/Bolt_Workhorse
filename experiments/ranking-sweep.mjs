@@ -136,7 +136,8 @@ const GRIDS = [
 
 const baseline = evaluate({});
 console.log(`\nSweep: ${queries.length} contested queries · current defaults nDCG ${baseline.ndcg.toFixed(3)}, margin ${baseline.margin.toFixed(3)}`);
-console.log('train = fresh+semantic (5 queries) · holdout = navigational+technical+evergreen (3)\n');
+const trainCount = queries.filter((row) => TRAIN.has(row.class)).length;
+console.log(`train = fresh+semantic (${trainCount} queries) · holdout = everything else (${queries.length - trainCount})\n`);
 
 const results = [];
 for (const grid of GRIDS) {

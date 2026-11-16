@@ -346,6 +346,21 @@
       }
     },
     {
+      "id": "pg-bloat-tie",
+      "class": "navigational-tie",
+      "tie": "intent",
+      "query": "\"postgres index bloat\"",
+      "contested": "both rank first in their engine and cover the quoted phrase identically, so coverage cannot separate them: flat trust prefers the semantic engine (1.20 over 1.10) while navigational intent damps it to 0.95, under the keyword engine. Only the damping term can pick the reference, which is why the ablation for it now has a query that can move",
+      "lists": {
+        "exa": [
+          { "t": "Postgres index bloat explained in an essay", "u": "https://essay.example/pg-bloat", "s": "Commentary on bloat", "r": 1 }
+        ],
+        "brave": [
+          { "t": "Postgres index bloat reference for operators", "u": "https://docs.example/pg-bloat", "s": "Operational reference", "r": 2 }
+        ]
+      }
+    },
+    {
       "id": "ingress-coverage",
       "class": "coverage",
       "query": "kubernetes ingress tls renewal automation",

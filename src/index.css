@@ -74,6 +74,28 @@ body {
   margin-bottom: 0.25rem;
 }
 
+/* remark-gfm tables: any the model writes itself still has to be legible */
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #1e1e21;
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  background-color: #141416;
+  color: #9aa0a8;
+  font-weight: 500;
+}
+
 .markdown-body code {
   font-family: 'JetBrains Mono', monospace;
   background-color: #1a1a1d;

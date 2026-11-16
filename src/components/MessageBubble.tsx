@@ -4,6 +4,9 @@ import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookma
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { splitFollowUps } from '../lib/followUps';
+import { splitClaimLedger } from '../lib/claimLedger';
+import type { LedgerClaim } from '../lib/claimLedger';
+import { ClaimLedgerTable } from './ClaimLedgerTable';
 
 interface MessageBubbleProps {
   message: Message;
@@ -25,6 +28,12 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
   const { body, followUps } = useMemo(
     () => (isUser ? { body: message.content, followUps: [] as string[] } : splitFollowUps(message.content)),
     [isUser, message.content],
+  );
+  // the ledger is lifted out of the prose so it can be drawn as a table instead of whatever
+  // markdown the model happened to write; `body` keeps it, so copy and share still take it along
+  const { body: prose, claims } = useMemo(
+    () => (isUser ? { body, claims: [] as LedgerClaim[] } : splitClaimLedger(body)),
+    [isUser, body],
   );
 
   const sourceText = () =>
@@ -133,9 +142,12 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
           ) : isUser ? (
             <p className="text-sm whitespace-pre-wrap">{message.content}</p>
           ) : (
-            <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
-            </div>
+            <>
+              <div className="markdown-body">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{prose}</ReactMarkdown>
+              </div>
+              {claims.length > 0 && <ClaimLedgerTable claims={claims} />}
+            </>
           )}
         </div>
 

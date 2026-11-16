@@ -24,7 +24,7 @@ execFileSync(
 );
 
 // a file URL, not a bare path: Windows would read `C:/…` as the protocol `c:`
-const { describeLaneYield, engineWeights, fuseResults, fuseResultsDetailed, laneContribution, queryIntent, recencyWeight, summarizeLaneYield } = await import(
+const { deadLanes, describeLaneYield, engineWeights, fuseResults, fuseResultsDetailed, laneContribution, queryIntent, recencyWeight, summarizeLaneYield } = await import(
   `${pathToFileURL(MODULE).href}?t=${Date.now()}`
 );
 
@@ -286,6 +286,39 @@ check(
     { lane: 'exa', engine: 'exa', returned: 5, kept: 3, offTopic: 2, dropped: [] },
     { lane: 'tavily', engine: 'tavily', returned: 2, kept: 0, offTopic: 2, dropped: [] },
   ]).includes('exa 3/5, tavily 0/2'),
+);
+// A thin page has to explain itself later, and the usual explanation is an engine that answered
+// with nothing — so the trail names it rather than only counting survivors.
+const deadAndAlive = [
+  { lane: 'exa', engine: 'exa', returned: 4, kept: 4, offTopic: 0, dropped: [] },
+  { lane: 'tavily', engine: 'tavily', returned: 0, kept: 0, offTopic: 0, dropped: [] },
+];
+check('dead lanes are listed by name', deadLanes(deadAndAlive).join(',') === 'tavily', deadLanes(deadAndAlive).join(','));
+check('an engine that produced nothing is not counted as working', deadLanes([{ lane: 'exa', engine: 'exa', returned: 3, kept: 1, offTopic: 2, dropped: [] }]).length === 0);
+check(
+  'a thin run names the lane that answered with nothing',
+  describeLaneYield(deadAndAlive) ===
+    'Lane yield: all 4 results across 1 lane survived the gate; 1 lane answered with nothing (tavily)',
+  describeLaneYield(deadAndAlive),
+);
+check(
+  'gate waste and a dead lane are reported together',
+  describeLaneYield([
+    { lane: 'exa', engine: 'exa', returned: 5, kept: 3, offTopic: 2, dropped: [] },
+    { lane: 'tavily', engine: 'tavily', returned: 0, kept: 0, offTopic: 0, dropped: [] },
+  ]) === 'Lane yield: 1 engine lost results to the gate — exa 3/5; 1 lane answered with nothing (tavily)',
+);
+check(
+  'an empty page says no lane produced anything, naming them all',
+  describeLaneYield([
+    { lane: 'exa', engine: 'exa', returned: 0, kept: 0, offTopic: 0, dropped: [] },
+    { lane: 'tavily', engine: 'tavily', returned: 0, kept: 0, offTopic: 0, dropped: [] },
+  ]) === 'Lane yield: no lane produced anything (exa, tavily)',
+);
+check(
+  'a relaxed gate still names the dead lane',
+  /kept anyway; 1 lane answered with nothing \(tavily\)/.test(describeLaneYield(deadAndAlive, true)),
+  describeLaneYield(deadAndAlive, true),
 );
 check(
   'summarising keeps the dropped titles from every lane',

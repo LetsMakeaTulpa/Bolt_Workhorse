@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { webSearch } from '../lib/api';
 import { CLIENT_ENGINE_IDS, searchClientEngines } from '../lib/clientEngines';
-import { describeLaneYield, fuseResultsDetailed, summarizeLaneYield } from '../lib/fusion';
+import { deadLanes, describeLaneYield, fuseResultsDetailed, summarizeLaneYield } from '../lib/fusion';
 import type { LaneYield } from '../lib/fusion';
 import { RunGuard } from '../lib/runGuard';
 import {
@@ -239,6 +239,7 @@ export function useSearch({
         // cost this engine, and which results it cost
         await logActivity(convId, 'rank', describeLaneYield(yieldReport, relaxed), {
           lane_yield: laneYieldDetail(yieldReport),
+          dead_lanes: deadLanes(yieldReport),
           gate_relaxed: relaxed,
         });
         await logActivity(convId, 'deduplicate', `Deduplicated and scored ${fused.length} unique sources`);
@@ -401,6 +402,7 @@ export function useSearch({
         await logActivity(conversationId, 'rank', describeLaneYield(laneReport, relaxed), {
           lane,
           lane_yield: laneYieldDetail(laneReport),
+          dead_lanes: deadLanes(laneReport),
           gate_relaxed: relaxed,
         });
         if (fused.length === 0) {

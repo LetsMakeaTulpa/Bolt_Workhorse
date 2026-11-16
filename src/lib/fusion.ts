@@ -394,16 +394,34 @@ export function summarizeLaneYield(rows: LaneYield[]): LaneYield[] {
  * past search can only be judged after the fact if the record says who wasted what — the lane-yield
  * strip in the composer is gone as soon as the next search starts.
  */
+/**
+ * Engines that answered the query with nothing at all. A thin page is usually explained here rather
+ * than by the gate, so the names matter more than the count.
+ */
+export function deadLanes(rows: LaneYield[]): string[] {
+  return rows.filter((row) => row.returned === 0).map((row) => row.engine);
+}
+
 export function describeLaneYield(rows: LaneYield[], relaxed = false): string {
   if (rows.length === 0) return 'Lane yield: no engine reported';
   const produced = rows.reduce((sum, row) => sum + row.returned, 0);
-  if (relaxed) return `Lane yield: nothing cleared the gate, so all ${produced} results were kept anyway`;
+  const dead = deadLanes(rows);
+  const deadPart =
+    dead.length > 0
+      ? `${dead.length} lane${dead.length === 1 ? '' : 's'} answered with nothing (${dead.join(', ')})`
+      : '';
+  // nothing to weigh at all: the dead lanes are the whole story, so do not report a fraction of zero
+  if (produced === 0 && dead.length > 0) return `Lane yield: no lane produced anything (${dead.join(', ')})`;
   const wasted = rows.filter((row) => row.offTopic > 0);
-  if (wasted.length === 0) {
-    return `Lane yield: all ${produced} results across ${rows.length} lane${rows.length === 1 ? '' : 's'} survived the gate`;
-  }
-  const detail = wasted.map((row) => `${row.engine} ${row.kept}/${row.returned}`).join(', ');
-  return `Lane yield: ${wasted.length} engine${wasted.length === 1 ? '' : 's'} lost results to the gate — ${detail}`;
+  const alive = rows.length - dead.length;
+  const head = relaxed
+    ? `nothing cleared the gate, so all ${produced} results were kept anyway`
+    : wasted.length === 0
+      ? `all ${produced} results across ${alive} lane${alive === 1 ? '' : 's'} survived the gate`
+      : `${wasted.length} engine${wasted.length === 1 ? '' : 's'} lost results to the gate — ${wasted
+          .map((row) => `${row.engine} ${row.kept}/${row.returned}`)
+          .join(', ')}`;
+  return `Lane yield: ${deadPart ? `${head}; ${deadPart}` : head}`;
 }
 
 export interface LaneContribution {

@@ -202,6 +202,11 @@ check(
   yieldRows[0]?.description,
 );
 check('the gate verdict rides along with it', yieldRows[0]?.details?.gate_relaxed === false, String(yieldRows[0]?.details?.gate_relaxed));
+check(
+  'the row lists the dead lanes, even when there are none',
+  Array.isArray(yieldRows[0]?.details?.dead_lanes) && yieldRows[0].details.dead_lanes.length === 0,
+  JSON.stringify(yieldRows[0]?.details?.dead_lanes),
+);
 
 const abortedFirstRun = requests.at(-2);
 check('the superseded run had its request cancelled', abortedFirstRun?.signal?.aborted === true);

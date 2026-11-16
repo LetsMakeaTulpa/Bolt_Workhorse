@@ -4,10 +4,7 @@
 // handler against stubs that behave like those instances.
 // Run: node experiments/searxng.test.mjs
 
-import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { asUrl, bundle, tmpPath } from './lib/build.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -16,26 +13,19 @@ const check = (name, ok, detail = '') => {
 };
 
 const STUB = `${process.cwd()}/experiments/fixtures/supabase-stub.mjs`.replaceAll('\\', '/');
-// a literal /tmp resolves to C:\tmp on Windows, where nothing was written
-const OUT = (process.env.SEARXNG_MODULE ?? join(tmpdir(), 'web-search-searxng.mjs')).replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+// the shared helper: the esbuild that ships with vite, run under node, output in os.tmpdir() — a
+// literal /tmp resolves to C:\tmp on Windows, where nothing was written
+const OUT = (process.env.SEARXNG_MODULE ?? tmpPath('web-search-searxng.mjs')).replaceAll('\\', '/');
 
-// local esbuild under node: spawning `npx` fails through cmd.exe on Windows
-execFileSync(
-  process.execPath,
-  [
-    ESBUILD, 'supabase/functions/web-search/index.ts',
-    '--bundle', '--format=esm', `--outfile=${OUT}`,
-    '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB, '--log-level=error',
-  ],
-  { stdio: 'inherit' },
-);
+bundle('supabase/functions/web-search/index.ts', OUT, [
+  '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB,
+]);
 
 // ── Deno stand-in ─────────────────────────────────────────────────────────────
 let env = {};
 globalThis.Deno = { env: { get: (name) => env[name] }, serve: () => {} };
 
-const { handleRequest } = await import(pathToFileURL(OUT).href);
+const { handleRequest } = await import(asUrl(OUT));
 
 // ── instances that behave like the real ones ──────────────────────────────────
 const LONG = 'a'.repeat(500);

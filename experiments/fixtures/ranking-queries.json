@@ -129,6 +129,294 @@
           { "t": "The fall of the Roman Republic a structural history", "u": "https://essay.example/roman-republic", "s": "History of the republic and its collapse", "p": "2019-03-04", "r": 2 }
         ]
       }
+    },
+    {
+      "id": "warehouse-recency-tie",
+      "class": "fresh-tie",
+      "tie": "recency",
+      "query": "latest warehouse robotics adoption news",
+      "contested": "identical query coverage, same engine, and the stale roundup sits at rank 0: only the date can move it",
+      "lists": {
+        "tavily": [
+          { "t": "Latest warehouse robotics adoption news roundup quarterly", "u": "https://logistics.example/warehouse-roundup", "s": "Collected links", "p": "2024-05-20", "r": 1 },
+          { "t": "Latest warehouse robotics adoption news from this week with depot deployment figures", "u": "https://logistics.example/warehouse-week", "s": "Ship list", "p": "2026-11-13", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "inverter-recency-tie",
+      "class": "fresh-tie",
+      "tie": "recency",
+      "query": "latest solar inverter firmware recall notices",
+      "contested": "identical query coverage, same engine, and the 2023 archive sits at rank 0: only the date can move it",
+      "lists": {
+        "brave": [
+          { "t": "Latest solar inverter firmware recall notices archive covering prior vendor bulletins", "u": "https://energy.example/inverter-recall-archive", "s": "Collected notices", "p": "2023-02-11", "r": 1 },
+          { "t": "Latest solar inverter firmware recall notices issued today", "u": "https://energy.example/inverter-recall-now", "s": "Manufacturer bulletin", "p": "2026-11-14", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "hospital-recency-tie",
+      "class": "fresh-tie",
+      "tie": "recency",
+      "query": "recent hospital ransomware incident briefings",
+      "contested": "identical query coverage, same engine, and the older collection sits at rank 0: only the date can move it",
+      "lists": {
+        "exa": [
+          { "t": "Recent hospital ransomware incident briefings collected through 2023", "u": "https://health.example/ransomware-briefings-archive", "s": "Historic collection", "p": "2023-08-04", "r": 1 },
+          { "t": "Recent hospital ransomware incident briefings published by affected trusts", "u": "https://health.example/ransomware-briefings-now", "s": "Statements from trusts", "p": "2026-11-12", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "rag-citation-tie",
+      "class": "semantic-tie",
+      "tie": "intent",
+      "query": "why do retrieval augmented generation systems hallucinate citations",
+      "contested": "both rank first in their engine and cover the query identically; flat trust prefers the keyword engine (1.25 over 1.20) while semantic intent lifts the explanation above it",
+      "lists": {
+        "duckduckgo": [
+          { "t": "Why retrieval augmented generation systems hallucinate citations a practitioner checklist with rate tables", "u": "https://checklist.example/rag-citations", "s": "Knobs to tune", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Why retrieval augmented generation systems hallucinate citations the decoding mechanism behind fabricated sources", "u": "https://explainer.example/rag-citations", "s": "How decoding produces unattributable claims", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "vrshading-tie",
+      "class": "semantic-tie",
+      "tie": "intent",
+      "query": "how does variable rate shading affect gpu fill rate",
+      "contested": "identical coverage across two engines; flat trust prefers the keyword engine, semantic intent prefers the explanation",
+      "lists": {
+        "duckduckgo": [
+          { "t": "How variable rate shading affect GPU fill rate benchmarks across drivers and game engines", "u": "https://bench.example/vrs-fillrate", "s": "Measured frame times", "r": 1 }
+        ],
+        "exa": [
+          { "t": "How variable rate shading affect GPU fill rate the rasterisation pipeline explanation", "u": "https://graphics.example/vrs-fillrate", "s": "Why shading rate and fill rate diverge", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "diffusion-memorise-tie",
+      "class": "semantic-tie",
+      "tie": "intent",
+      "query": "why do diffusion models memorise training images",
+      "contested": "identical coverage across two engines; only engine trust by intent separates the benchmark table from the mechanism",
+      "lists": {
+        "duckduckgo": [
+          { "t": "Why diffusion models memorise training images a benchmark of memorisation rates", "u": "https://bench.example/diffusion-memorisation", "s": "Measured rates", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Why diffusion models memorise training images the denoising objective explanation", "u": "https://explainer.example/diffusion-memorisation", "s": "How the objective rewards copying", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "digital-euro",
+      "class": "fresh",
+      "query": "latest digital euro legislation news",
+      "contested": "the stale timeline covers the topic better; only the date makes the trilogue report the answer",
+      "lists": {
+        "exa": [
+          { "t": "Digital euro legislation history and timeline", "u": "https://ecb.example/digital-euro-timeline", "s": "Collected dates", "p": "2022-06-30", "r": 0 },
+          { "t": "Digital euro legislation primer", "u": "https://ecb.example/digital-euro-primer", "s": "Background", "p": "2023-01-15", "r": 0 }
+        ],
+        "brave": [
+          { "t": "Digital euro legislation advances to trilogue", "u": "https://news.example/digital-euro-trilogue", "s": "Parliament vote", "p": "2026-11-10", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "npm-outage",
+      "class": "fresh",
+      "query": "recent npm registry outage report",
+      "contested": "the 2021 postmortem is the better match on terms; the report from this week is what was asked for",
+      "lists": {
+        "exa": [
+          { "t": "npm registry outage postmortem archive", "u": "https://archive.example/npm-outage-2021", "s": "Old incident writeup", "p": "2021-11-02", "r": 1 }
+        ],
+        "tavily": [
+          { "t": "npm registry outage report from this week", "u": "https://status.example/npm-outage-now", "s": "Incident summary", "p": "2026-11-13", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "attention-sink",
+      "class": "semantic",
+      "query": "why do transformers attend to sink tokens",
+      "contested": "both rank first in their engine; the mechanism answers the why question, the benchmark does not",
+      "lists": {
+        "google": [
+          { "t": "Transformers attend sink tokens benchmark results", "u": "https://bench.example/attention-sink", "s": "Measured attention curves", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Why transformers attend to sink tokens a streaming attention mechanism", "u": "https://explainer.example/attention-sink", "s": "How the sink absorbs surplus attention", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "lsm-btree",
+      "class": "semantic",
+      "query": "why do lsm trees beat b-trees on write heavy workloads",
+      "contested": "a measured comparison and an explanation cover the same terms; the question asks for the reason",
+      "lists": {
+        "duckduckgo": [
+          { "t": "LSM trees vs B-trees write heavy workloads benchmark table", "u": "https://bench.example/lsm-write", "s": "Throughput measurements", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Why LSM trees beat B-trees on write heavy workloads the compaction explanation", "u": "https://explainer.example/lsm-write", "s": "How compaction turns random writes into sequential ones", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "raft-liveness",
+      "class": "semantic",
+      "query": "how does raft maintain liveness during partitions",
+      "contested": "a deployment checklist and an analysis cover the same terms; only the mechanism answers how",
+      "lists": {
+        "google": [
+          { "t": "Raft liveness during partitions deployment checklist", "u": "https://ops.example/raft-liveness", "s": "Operational steps", "r": 1 }
+        ],
+        "exa": [
+          { "t": "How Raft maintains liveness during partitions the election timeout analysis", "u": "https://explainer.example/raft-liveness", "s": "Why a minority cannot elect a leader", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "log4shell",
+      "class": "navigational",
+      "query": "CVE-2021-44228 log4j exploitation scanner",
+      "contested": "control case: an identifier query already damps the semantic engine, so the detection rules lead before and after — the margin should widen instead",
+      "lists": {
+        "exa": [
+          { "t": "CVE-2021-44228 log4j exploitation scanner explained in an essay", "u": "https://essay.example/log4j", "s": "Commentary on the incident", "r": 1 }
+        ],
+        "github": [
+          { "t": "CVE-2021-44228 log4j exploitation scanner detection rules", "u": "https://github.example/log4j-rules", "s": "Rules and signatures", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "tracing-spec",
+      "class": "navigational",
+      "query": "\"distributed tracing collector\" specification",
+      "contested": "control case: a quoted phrase is an exact-match query, so the reference leads before and after",
+      "lists": {
+        "exa": [
+          { "t": "\"Distributed tracing collector\" specification comparison article", "u": "https://essay.example/otel-spec", "s": "Comparison of vendor specs", "r": 1 }
+        ],
+        "duckduckgo": [
+          { "t": "\"Distributed tracing collector\" specification reference", "u": "https://docs.example/otel-spec", "s": "Normative reference", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "pgbouncer-pooling",
+      "class": "technical",
+      "query": "pgbouncer transaction pooling timeout",
+      "contested": "control case: the answer and the blog are both on-topic and the trusted engine leads either way",
+      "lists": {
+        "stackexchange": [
+          { "t": "Why pgbouncer transaction pooling times out", "u": "https://dba.example/q/456", "s": "Accepted answer with server settings", "r": 2 }
+        ],
+        "exa": [
+          { "t": "Pgbouncer transaction pooling timeout tuning", "u": "https://blog.example/pgbouncer", "s": "Tuning walkthrough", "r": 1 }
+        ]
+      }
+    },
+    {
+      "id": "byzantine-history",
+      "class": "evergreen",
+      "query": "history of the byzantine empire",
+      "contested": "control case: a fresh travel page must not outrank the encyclopaedia entry on a timeless query",
+      "lists": {
+        "wikipedia": [
+          { "t": "Byzantine Empire", "u": "https://en.wikipedia.example/Byzantine_Empire", "s": "The Byzantine Empire was the continuation of the Roman Empire in the east", "p": "2026-10-20", "r": 2 }
+        ],
+        "tavily": [
+          { "t": "Byzantine Empire travel guide", "u": "https://travel.example/byzantium", "s": "Book a tour", "p": "2026-11-10", "r": 0 },
+          { "t": "Byzantine Empire summary", "u": "https://crawl.example/byzantine", "s": "Short summary", "p": "2026-11-05", "r": 1 }
+        ],
+        "exa": [
+          { "t": "The Byzantine Empire a structural history", "u": "https://essay.example/byzantine", "s": "History of the eastern empire", "p": "2019-01-01", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "ingress-coverage",
+      "class": "coverage",
+      "query": "kubernetes ingress tls renewal automation",
+      "contested": "exponent probe: the partial match holds rank 0 while the full-coverage page sits at rank 1, so only the relevance exponent decides how wide the lead is",
+      "lists": {
+        "google": [
+          { "t": "Kubernetes ingress TLS renewal without automated certificate rotation", "u": "https://docs.example/ingress-tls", "s": "Partial notes, no automation", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Certificate rotation checklist", "u": "https://ops.example/cert-rotation", "s": "Rotation steps", "r": 0 },
+          { "t": "Kubernetes ingress TLS renewal automation playbook for cert-manager", "u": "https://ops.example/ingress-automation", "s": "Full playbook with automation", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "vacuum-coverage",
+      "class": "coverage",
+      "query": "postgres vacuum freeze wraparound monitoring",
+      "contested": "exponent probe: the four-term page outranks nothing, while the five-term page sits at rank 1 in its engine",
+      "lists": {
+        "google": [
+          { "t": "Postgres vacuum freeze wraparound explained for operators", "u": "https://docs.example/vacuum-wrap", "s": "Explains the counter", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Database maintenance tooling roundup", "u": "https://ops.example/maintenance-roundup", "s": "Three tools compared", "r": 0 },
+          { "t": "Postgres vacuum freeze wraparound monitoring query", "u": "https://ops.example/vacuum-monitoring", "s": "Alert query and thresholds", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "dns-cache-coverage",
+      "class": "coverage",
+      "query": "dns cache poisoning mitigation resolver",
+      "contested": "exponent probe: the four-term mitigation note holds the better rank against the five-term guide",
+      "lists": {
+        "brave": [
+          { "t": "DNS cache poisoning mitigation checklist for operators", "u": "https://docs.example/dns-mitigation", "s": "Mitigation list", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Resolver hardening overview", "u": "https://ops.example/resolver-overview", "s": "General hardening", "r": 0 },
+          { "t": "DNS cache poisoning mitigation resolver guide", "u": "https://ops.example/dns-resolver-guide", "s": "Per-resolver configuration", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "sbom-coverage",
+      "class": "coverage",
+      "query": "software bill of materials attestation pipeline",
+      "contested": "exponent probe: a four-term repo holds rank 0 against a five-term example at rank 1",
+      "lists": {
+        "github": [
+          { "t": "Software bill of materials attestation explained for auditors", "u": "https://github.example/sbom-attest", "s": "Attestation action", "r": 1 }
+        ],
+        "exa": [
+          { "t": "Supply chain notes", "u": "https://ops.example/supply-chain", "s": "General notes", "r": 0 },
+          { "t": "Software bill of materials attestation pipeline example", "u": "https://ops.example/sbom-pipeline", "s": "End-to-end example", "r": 2 }
+        ]
+      }
+    },
+    {
+      "id": "firmware-recency-tie",
+      "class": "fresh-tie",
+      "tie": "recency",
+      "query": "latest firmware signing key rotation guidance",
+      "contested": "identical query coverage, same engine, and the older bulletin sits at rank 0: only the date can move it",
+      "lists": {
+        "google": [
+          { "t": "Latest firmware signing key rotation guidance archive of prior bulletins", "u": "https://vendor.example/firmware-guidance-archive", "s": "Prior bulletins", "p": "2023-04-02", "r": 1 },
+          { "t": "Latest firmware signing key rotation guidance published this week with vendor statements", "u": "https://vendor.example/firmware-guidance-now", "s": "Vendor statements", "p": "2026-11-12", "r": 2 }
+        ]
+      }
     }
   ]
 }

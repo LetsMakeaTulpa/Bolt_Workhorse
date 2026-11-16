@@ -7,24 +7,29 @@
 //   node experiments/ranking-sweep.mjs --ablate    # what each constant buys
 //   node experiments/ranking-sweep.mjs --stability # leave-one-out check on the chosen values
 //
-// Tuning on eight queries is a small sample, so a value is only reported as "earning its place"
+// Twenty-eight queries is still a small sample, so a value is only reported as "earning its place"
 // when it improves the tuned queries without giving up ground on the held-out classes.
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const args = process.argv.slice(2);
 const STABILITY = args.includes('--stability');
 const ABLATE = args.includes('--ablate');
 
 const FIXTURE_PATH = 'experiments/fixtures/ranking-queries.json';
-const MODULE = '/tmp/fieldwork-ranking-sweep.mjs';
+// run the local esbuild under node directly: `npx` cannot be spawned through cmd.exe on Windows
+const MODULE = (process.env.RANKING_MODULE ?? '/tmp/fieldwork-ranking-sweep.mjs').replaceAll('\\', '/');
+const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
 execFileSync(
-  'npx',
-  ['--yes', 'esbuild', 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
+  process.execPath,
+  [ESBUILD, 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
   { stdio: 'inherit' },
 );
-const { canonicalUrl, engineWeights, fuseResults, queryIntent } = await import(`${MODULE}?t=${Date.now()}`);
+const { canonicalUrl, engineWeights, fuseResults, queryIntent } = await import(
+  `${pathToFileURL(MODULE).href}?t=${Date.now()}`
+);
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
 const NOW = Date.parse(fixture.evaluated_at ?? '2026-11-15T00:00:00Z');
@@ -76,7 +81,7 @@ const meanDefined = (values) => mean(values.filter((value) => value !== null && 
 // would drift), start from the real weights and apply the difference for the one delta under test.
 const clamp = (value, lo = 0.25, hi = 1.6) => Math.max(lo, Math.min(hi, value));
 
-const DEFAULT_DELTAS = { exaSemantic: 0.45, exaNavigational: 0.5, exaFresh: 0.2, tavilyFresh: 0.45, tavilyEvergreen: 0.25, googleFresh: 0.15, braveFresh: 0.1, arxivFresh: 0.15, openalexFresh: 0.1 };
+const DEFAULT_DELTAS = { exaSemantic: 0.45, exaNavigational: 0.5, exaFresh: 0.2, tavilyFresh: 0.45 };
 
 function weightsFor(query, override = {}) {
   const d = { ...DEFAULT_DELTAS, ...override };
@@ -85,12 +90,7 @@ function weightsFor(query, override = {}) {
   weights.exa = clamp(weights.exa + (d.exaSemantic - DEFAULT_DELTAS.exaSemantic) * intent.semantic
     - (d.exaNavigational - DEFAULT_DELTAS.exaNavigational) * intent.navigational
     - (d.exaFresh - DEFAULT_DELTAS.exaFresh) * intent.fresh);
-  weights.tavily = clamp(weights.tavily + (d.tavilyFresh - DEFAULT_DELTAS.tavilyFresh) * intent.fresh
-    - (d.tavilyEvergreen - DEFAULT_DELTAS.tavilyEvergreen) * intent.evergreen);
-  weights.google = clamp(weights.google + (d.googleFresh - DEFAULT_DELTAS.googleFresh) * intent.fresh);
-  weights.brave = clamp(weights.brave + (d.braveFresh - DEFAULT_DELTAS.braveFresh) * intent.fresh);
-  weights.arxiv = clamp(weights.arxiv - (d.arxivFresh - DEFAULT_DELTAS.arxivFresh) * intent.fresh);
-  weights.openalex = clamp(weights.openalex - (d.openalexFresh - DEFAULT_DELTAS.openalexFresh) * intent.fresh);
+  weights.tavily = clamp(weights.tavily + (d.tavilyFresh - DEFAULT_DELTAS.tavilyFresh) * intent.fresh);
   return weights;
 }
 
@@ -131,10 +131,7 @@ const GRIDS = [
     apply: (value) => ({ deltas: { exaNavigational: value } }) },
   { key: 'tavilyFresh', label: 'tavily + fresh', defaultValue: 0.45, values: [0.1, 0.25, 0.45, 0.7, 1.0],
     apply: (value) => ({ deltas: { tavilyFresh: value } }) },
-  { key: 'googleFresh', label: 'google + fresh', defaultValue: 0.15, values: [0, 0.15, 0.3, 0.5, 0.8],
-    apply: (value) => ({ deltas: { googleFresh: value } }) },
-  { key: 'arxivFresh', label: 'arxiv - fresh', defaultValue: 0.15, values: [0, 0.15, 0.3, 0.5],
-    apply: (value) => ({ deltas: { arxivFresh: value } }) },
+
 ];
 
 const baseline = evaluate({});
@@ -215,10 +212,7 @@ if (ABLATE) {
     { label: 'exa - navigational .5', neutral: '0', cfg: { deltas: { exaNavigational: 0 } } },
     { label: 'exa - fresh .2', neutral: '0', cfg: { deltas: { exaFresh: 0 } } },
     { label: 'tavily + fresh .45', neutral: '0', cfg: { deltas: { tavilyFresh: 0 } } },
-    { label: 'google + fresh .15', neutral: '0', cfg: { deltas: { googleFresh: 0 } } },
-    { label: 'brave + fresh .1', neutral: '0', cfg: { deltas: { braveFresh: 0 } } },
-    { label: 'arxiv - fresh .15', neutral: '0', cfg: { deltas: { arxivFresh: 0 } } },
-    { label: 'openalex - fresh .1', neutral: '0', cfg: { deltas: { openalexFresh: 0 } } },
+
   ];
   for (const { label, neutral, cfg } of ABLATIONS) {
     const without = evaluate(cfg);

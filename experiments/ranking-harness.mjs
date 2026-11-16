@@ -7,6 +7,13 @@
 //   node experiments/ranking-harness.mjs --verbose
 //   node experiments/ranking-harness.mjs --check      # exit 1 on an overall regression
 //   node experiments/ranking-harness.mjs --fixture path/to/queries.json
+//   node experiments/ranking-harness.mjs --compare path/to/weights.json
+//
+// `--compare` scores any two weight configurations you name, instead of the fixed default pair
+// (flat trust with no freshness versus whatever `engineWeights` does today). A configuration is
+// `{ "label", "weights": "flat" | "intent" | { engine: number }, "recency": boolean }`; the file is
+// `{ "before": {...}, "after": {...} }`. That is what a constant change is actually asking: the
+// same fixed queries, the old numbers and the new numbers, one table apart.
 //
 // The fixture is deliberately offline: judgments come with the query set, so a weight change can
 // be scored in a second, on every commit, with no API keys and no network.
@@ -18,6 +25,7 @@
 
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const args = process.argv.slice(2);
 const has = (name) => args.includes(`--${name}`);
@@ -27,17 +35,78 @@ const value = (name, fallback) => {
 };
 
 const FIXTURE_PATH = value('fixture', 'experiments/fixtures/ranking-queries.json');
+const COMPARE_PATH = value('compare', null);
 const CHECK = has('check');
 const VERBOSE = has('verbose');
 
+// How much the lead over the best lesser result may shrink before `--check` fails. Margin is a
+// fraction of the best score, so these are absolute proportions, not ratios: 0.02 overall is a
+// fifth of the typical gap this fixture produces.
+const MARGIN_TOLERANCE = 0.02;
+const CLASS_MARGIN_TOLERANCE = 0.05;
+/** A single query narrowing by this much is listed, so the cause is visible even when the mean holds. */
+const QUERY_MARGIN_DROP = 0.05;
+
 // ── fusion, bundled straight from source ─────────────────────────────────────
-const MODULE = '/tmp/fieldwork-ranking-fusion.mjs';
+// The local esbuild JS entry point runs under node directly: spawning `npx` through cmd.exe on
+// Windows cannot find the binary, and shell quoting would mangle the define flags.
+const MODULE = (process.env.RANKING_MODULE ?? '/tmp/fieldwork-ranking-fusion.mjs').replaceAll('\\', '/');
+const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
 execFileSync(
-  'npx',
-  ['--yes', 'esbuild', 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
+  process.execPath,
+  [ESBUILD, 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
   { stdio: 'inherit' },
 );
-const { canonicalUrl, engineWeights, fuseResults } = await import(`${MODULE}?t=${Date.now()}`);
+const { canonicalUrl, engineWeights, fuseResults, termCoverage, tokens } = await import(
+  `${pathToFileURL(MODULE).href}?t=${Date.now()}`
+);
+
+// ── the two configurations being compared ────────────────────────────────────
+// Default: the pre-intent scheme against the current one. `--compare` replaces either side with a
+// named configuration, which is how a weight change is scored without editing this file.
+const DEFAULT_CONFIGS = {
+  before: { label: 'flat engine trust, no freshness', weights: 'flat', recency: false },
+  after: { label: 'current intent weights + freshness' },
+};
+
+function loadConfigs(path) {
+  if (!path) return DEFAULT_CONFIGS;
+  const spec = JSON.parse(readFileSync(path, 'utf8'));
+  if (!spec.before || !spec.after) {
+    console.error(`${path} needs a "before" and an "after" configuration`);
+    process.exit(2);
+  }
+  const label = (side, value) => (typeof value.label === 'string' && value.label ? value.label : side);
+  return {
+    before: { ...spec.before, label: label('before', spec.before) },
+    after: { ...spec.after, label: label('after', spec.after) },
+  };
+}
+
+const configs = loadConfigs(COMPARE_PATH);
+
+/** Turn a named configuration into `fuseResults` options for one query. */
+function optionsFor(config, query) {
+  const options = { now: NOW, limit: 10 };
+  if (config.weights === 'flat') {
+    // the pre-intent table: keyword routing still applies, engine character does not
+    options.weights = engineWeights(query, NOW, { character: false });
+  } else if (config.weights === 'intent') {
+    options.weights = engineWeights(query, NOW);
+  } else if (config.weights && typeof config.weights === 'object') {
+    options.weights = config.weights;
+  } else if (config.weights !== undefined) {
+    console.error(`unknown weights mode "${config.weights}" — use "flat", "intent" or a { engine: number } map`);
+    process.exit(2);
+  }
+  // an explicit map with no single engine is a mistake worth naming, not an empty ranking
+  if (options.weights && Object.keys(options.weights).length === 0) {
+    console.error('a weights map must name at least one engine');
+    process.exit(2);
+  }
+  if (config.recency !== undefined) options.recency = Boolean(config.recency);
+  return options;
+}
 
 // ── fixture ──────────────────────────────────────────────────────────────────
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
@@ -68,6 +137,23 @@ function prepare(entry) {
 
 // ── metrics ─────────────────────────────────────────────────────────────────
 const gain = (rel) => 2 ** rel - 1;
+
+/**
+ * IDF-weighted coverage of every result in a query — the same number fusion scores with.
+ * A `tie` query claims its on-topic pair is separated by nothing but a date or engine trust, so
+ * this checks the claim instead of trusting the fixture's prose: equal coverage is what makes such
+ * a query discriminating.
+ */
+function coverageOf(lists, query) {
+  const all = Object.values(lists).flat();
+  const df = new Map();
+  for (const item of all) {
+    for (const token of new Set(tokens(`${item.title} ${item.snippet}`))) {
+      df.set(token, (df.get(token) ?? 0) + 1);
+    }
+  }
+  return all.map((item) => ({ item, coverage: termCoverage(query, item, df, all.length) }));
+}
 
 /**
  * How far the best answer sits above the best lesser result, relative to its own score.
@@ -119,6 +205,7 @@ const fmt = (value) => (Number.isFinite(value) ? value.toFixed(3) : '—');
 
 // ── run both configurations ─────────────────────────────────────────────────
 const rows = [];
+const tieProblems = [];
 for (const entry of queries) {
   const { lists, judgements } = prepare(entry);
   if (judgements.size === 0) {
@@ -126,11 +213,41 @@ for (const entry of queries) {
     process.exit(2);
   }
 
-  const baselineWeights = engineWeights(entry.query, NOW, { character: false });
-  const baseline = fuseResults(entry.query, lists, {
-    now: NOW, limit: 10, weights: baselineWeights, recency: false,
-  });
-  const candidate = fuseResults(entry.query, lists, { now: NOW, limit: 10 });
+  // Fixture integrity, checked for every query: two judged results whose titles are close enough to
+  // merge into one entity means the pair can never be reordered, so the query silently measures a
+  // single answer. Ties additionally have to be exactly equal on coverage.
+  {
+    const onTopic = coverageOf(lists, entry.query)
+      .filter(({ item }) => (judgements.get(canonicalUrl(item.url)) ?? 0) >= 1)
+      .map(({ item, coverage }) => ({ url: item.url, coverage }));
+    if (onTopic.length < 2) {
+      if (entry.tie) {
+        tieProblems.push(`${entry.id}: a ${entry.tie} tie needs two on-topic results, found ${onTopic.length}`);
+      }
+    } else {
+      const spread = Math.max(...onTopic.map((row) => row.coverage)) - Math.min(...onTopic.map((row) => row.coverage));
+      if (entry.tie && spread > 1e-9) {
+        tieProblems.push(
+          `${entry.id}: on-topic results differ in coverage by ${spread.toFixed(6)} — relevance alone separates them, so it is not a ${entry.tie} tie`,
+        );
+      }
+
+      // Merging two engines' copies of one page is the point of entity resolution, so an absent URL
+      // is not a defect on its own. Losing the *best-graded* page is: it means a top answer was
+      // swallowed by a lesser one and the query now scores an order it never judged.
+      const fusedDefault = fuseResults(entry.query, lists, { now: NOW, limit: 50 });
+      const bestJudged = Math.max(...judgements.values());
+      const bestRanked = Math.max(...fusedDefault.map((row) => judgements.get(canonicalUrl(row.url)) ?? 0));
+      if (bestRanked < bestJudged) {
+        tieProblems.push(
+          `${entry.id}: the best-graded result (${bestJudged}) never appears in the fused list — merged into a lesser result, so the query scores an order it never judged`,
+        );
+      }
+    }
+  }
+
+  const baseline = fuseResults(entry.query, lists, optionsFor(configs.before, entry.query));
+  const candidate = fuseResults(entry.query, lists, optionsFor(configs.after, entry.query));
 
   const before = score(baseline, judgements);
   const after = score(candidate, judgements);
@@ -139,7 +256,7 @@ for (const entry of queries) {
 
 // ── report ──────────────────────────────────────────────────────────────────
 console.log(`\nRanking benchmark: ${rows.length} queries from ${FIXTURE_PATH}`);
-console.log('before = flat engine trust, no freshness · after = intent weights + freshness\n');
+console.log(`before = ${configs.before.label} · after = ${configs.after.label}\n`);
 console.log('query              class        nDCG@10        MRR         ΔnDCG    margin   Δ');
 console.log('─'.repeat(88));
 for (const row of rows) {
@@ -203,10 +320,20 @@ console.log(`  margin    ${fmt(overallBefore.margin)} → ${fmt(overallAfter.mar
 console.log('  margin is order-free: 1 = nothing competes, 0 = a lesser result ties the best answer,');
 console.log('  negative = a lesser result still leads. "—" means every judged result was the best grade.');
 console.log(`  improved on ${improved}/${rows.length} queries, regressed on ${regressed}`);
+const marginDrops = rows
+  .filter((row) => row.before.margin !== null && row.after.margin !== null && row.after.margin < row.before.margin - QUERY_MARGIN_DROP)
+  .map((row) => ({ id: row.id, drop: row.after.margin - row.before.margin }));
+if (marginDrops.length > 0) {
+  const worst = marginDrops.reduce((a, b) => (b.drop < a.drop ? b : a));
+  console.log(`  margin narrowed on ${marginDrops.length}/${rows.length} queries (worst ${worst.id} ${fmtSigned(worst.drop)})`);
+} else {
+  console.log('  margin narrowed on no query');
+}
 if (improved === 0) {
   console.log('\n  ! no query moved. Either the weighting changed nothing, or the query set has lost its');
   console.log('    contested pairs and now scores the same however results are ranked.');
 }
+for (const problem of tieProblems) console.log(`\n  ! ${problem}`);
 
 if (has('json')) {
   console.log('\n' + JSON.stringify({
@@ -231,6 +358,39 @@ if (CHECK) {
     const a = mean(subset.map((r) => r.after.ndcg));
     if (a < b - 0.05) problems.push(`${name} nDCG regressed: ${fmt(b)} → ${fmt(a)}`);
   }
+
+  // margin can fall while nDCG holds: the right result stays first, but a lesser one closes in on
+  // it, which is the leading edge of the next reordering. Order metrics cannot see that, so it is
+  // gated on its own.
+  const marginsOf = (subset, side) => subset.map((row) => row[side].margin).filter((value) => value !== null && value !== undefined);
+  const definedBoth = marginsOf(rows, 'before').length > 0 && marginsOf(rows, 'after').length > 0;
+  if (definedBoth && overallAfter.margin < overallBefore.margin - MARGIN_TOLERANCE) {
+    problems.push(
+      `overall margin regressed: ${fmt(overallBefore.margin)} → ${fmt(overallAfter.margin)} (lead narrowed by more than ${MARGIN_TOLERANCE})`,
+    );
+  }
+  for (const name of classes) {
+    const subset = rows.filter((row) => row.class === name);
+    const b = marginsOf(subset, 'before');
+    const a = marginsOf(subset, 'after');
+    if (b.length === 0 || a.length === 0) continue;
+    const before = mean(b);
+    const after = mean(a);
+    if (after < before - CLASS_MARGIN_TOLERANCE) {
+      problems.push(`${name} margin regressed: ${fmt(before)} → ${fmt(after)}`);
+    }
+  }
+  // a tie query exists to be moved by recency or intent alone: if it stops moving, the set has
+  // stopped being discriminative even though nothing regressed. That is a claim about this fixture
+  // against the shipped weighting, so it only applies to the default pair — a `--compare` run is
+  // free to choose a configuration that deliberately moves nothing.
+  for (const name of COMPARE_PATH ? [] : classes.filter((name) => name.endsWith('-tie'))) {
+    const subset = rows.filter((row) => row.class === name);
+    const b = mean(subset.map((r) => r.before.ndcg));
+    const a = mean(subset.map((r) => r.after.ndcg));
+    if (a - b < 0.05) problems.push(`${name} is no longer discriminative: nDCG ${fmt(b)} → ${fmt(a)}`);
+  }
+  problems.push(...tieProblems);
   if (problems.length) {
     console.error('\nFAILED');
     for (const problem of problems) console.error(`  ✗ ${problem}`);

@@ -3,7 +3,14 @@ import { webSearch } from '../lib/api';
 import { CLIENT_ENGINE_IDS, searchClientEngines } from '../lib/clientEngines';
 import { fuseResultsDetailed, summarizeLaneYield } from '../lib/fusion';
 import type { LaneYield } from '../lib/fusion';
-import { DORK_ENGINES, mergeEngineIssues, summarizeEngineStatus, type EngineIssue } from '../lib/engines';
+import { RunGuard } from '../lib/runGuard';
+import {
+  DORK_ENGINES,
+  fallbackEnginesFor,
+  mergeEngineIssues,
+  summarizeEngineStatus,
+  type EngineIssue,
+} from '../lib/engines';
 import { expandLane } from '../lib/dorks';
 import type { ActivityLog, ResearchPreset, Source } from '../types';
 
@@ -57,33 +64,51 @@ export function useSearch({
   const [issues, setIssues] = useState<EngineIssue[]>([]);
   /** per-engine counts from the last fusion: what each produced, and what the gate kept */
   const [laneYield, setLaneYield] = useState<LaneYield[]>([]);
+  /** the relevance gate kept nothing, so the closest results were shown anyway */
+  const [relaxedGate, setRelaxedGate] = useState(false);
   /** the query behind the current result set, so the panel can explain the ranking */
   const [lastQuery, setLastQuery] = useState('');
-  /** the in-flight search; a newer run aborts it so stale results cannot land on top */
-  const runRef = useRef<AbortController | null>(null);
+  /** the in-flight search, plus the gate deciding which run is still allowed to write */
+  const guardRef = useRef<RunGuard | null>(null);
+  if (guardRef.current === null) guardRef.current = new RunGuard();
+  const guard = guardRef.current;
 
-  // a stale "exa: missing key" must not survive the user enabling a different engine set
+  const engineSignature = engines.join(',');
+
+  // A run belongs to the engine set it started with: changing the set supersedes it and aborts the
+  // fetch, so a slow engine from the old set cannot land on top of the new one's results. The stale
+  // "exa: missing key" must not outlive the selection either.
   useEffect(() => {
+    const wasRunning = guard.supersede();
     setIssues([]);
-  }, [engines.join(',')]);
+    setIsSearching(false);
+    setStatus('');
+    // partial results belong to the aborted run, not to the engine set the user just picked; a
+    // completed result set is left alone, because tweaking engines after reading results is normal
+    if (wasRunning) {
+      setResults([]);
+      setLaneYield([]);
+      setLastQuery('');
+    }
+  }, [engineSignature, guard]);
 
   const clearResults = useCallback(() => {
     setResults([]);
     setStatus('');
     setIssues([]);
     setLaneYield([]);
+    setRelaxedGate(false);
   }, []);
 
   const performSearch = useCallback(
     async (query: string, convId: string): Promise<Source[]> => {
-      // a new search owns the result list: cancel the previous run so a slow engine cannot
+      // a new search owns the result list: supersede the previous run so a slow engine cannot
       // overwrite fresher results when it finally answers
-      runRef.current?.abort();
+      const run = guard.begin();
+      const controller = run.controller;
+      const isCurrent = run.isCurrent;
       // and an answer still streaming from the previous question is about to be stale too
       abortStream();
-      const controller = new AbortController();
-      runRef.current = controller;
-      const isCurrent = () => runRef.current === controller;
 
       setIsSearching(true);
       setLastQuery(query);
@@ -133,22 +158,66 @@ export function useSearch({
         // a superseded run must not touch the list, the map or the database
         if (!isCurrent()) return [];
 
+        let gathered = [...(serverResponse?.results ?? []), ...browserResults];
+        let spareEngines: string[] = [];
+
+        // An empty page is not a result page. If every selected engine answered with nothing, ask
+        // the keyless set once, so a missing provider key degrades the ranking instead of blanking
+        // the screen.
+        if (gathered.length === 0) {
+          const spare = fallbackEnginesFor(enginesToUse);
+          if (spare.length > 0) {
+            const spareServer = spare.filter((engine) => !CLIENT_ENGINE_IDS.has(engine));
+            const spareBrowser = spare.filter((engine) => CLIENT_ENGINE_IDS.has(engine));
+            const [spareResponse, spareResults] = await Promise.all([
+              spareServer.length > 0
+                ? webSearch(query, spareServer, maxResults, useDorks, selectedPreset, false, controller.signal)
+                : null,
+              searchClientEngines(
+                query,
+                spareBrowser,
+                maxResults,
+                (_engine, items) => {
+                  if (isCurrent()) setResults((previous) => [...previous, ...items]);
+                },
+                controller.signal,
+              ),
+            ]);
+            if (!isCurrent()) return [];
+            if (spareResponse?.engine_status) {
+              setIssues((previous) => mergeEngineIssues(previous, summarizeEngineStatus(spareResponse.engine_status)));
+            }
+            if (spareResults.length > 0) {
+              gathered = [...(spareResponse?.results ?? []), ...spareResults];
+              spareEngines = spare;
+              await logActivity(
+                convId,
+                'search',
+                `The selected engines found nothing — retried the keyless set and got ${gathered.length}`,
+                { fallback_engines: spare },
+                'completed',
+              );
+            }
+          }
+        }
+
         // group every engine's ranking separately, then fuse across them. Seeding each engine that
         // ran turns "answered with nothing" into a 0 lane in the yield report instead of a gap.
         const perEngine: Record<string, Source[]> = {};
-        for (const engine of enginesToUse) perEngine[engine] = [];
-        for (const item of [...(serverResponse?.results ?? []), ...browserResults]) {
+        for (const engine of [...enginesToUse, ...spareEngines]) perEngine[engine] = [];
+        for (const item of gathered) {
           const engine = item.source_engine || 'unknown';
           (perEngine[engine] ??= []).push(item);
         }
-        const { results: fused, laneYield: yields } = fuseResultsDetailed(query, perEngine, { limit: 40 });
+        const { results: fused, laneYield: yields, relaxed } = fuseResultsDetailed(query, perEngine, { limit: 40 });
         if (!isCurrent()) return [];
 
         setResults(fused);
         setLaneYield(summarizeLaneYield(yields));
+        setRelaxedGate(relaxed);
 
         await logActivity(convId, 'rank', `Reciprocal Rank Fusion applied to ${fused.length} results`, {
-          engines_used: [...(serverResponse?.engines_used ?? []), ...browserEngines],
+          engines_used: [...(serverResponse?.engines_used ?? []), ...browserEngines, ...spareEngines],
           queries_used: serverResponse?.queries_used ?? [query],
         });
         await logActivity(convId, 'deduplicate', `Deduplicated and scored ${fused.length} unique sources`);
@@ -160,12 +229,8 @@ export function useSearch({
 
         return fused;
       } catch (err) {
-        // an aborted run is not a failure: the search that replaced it owns the status line
-        if (controller.signal.aborted || !isCurrent()) {
-          // ...but the row belongs to this run, so a user cancel has to close it itself
-          if (controller.signal.aborted && isCurrent() && searchLog) closeActivity(searchLog, 'Search cancelled');
-          return [];
-        }
+        // an aborted or superseded run is not a failure: the row it owns is closed in `finally`
+        if (controller.signal.aborted || !isCurrent()) return [];
         console.error('Search error:', err);
         setResults([]);
         setLaneYield([]);
@@ -175,25 +240,28 @@ export function useSearch({
         if (isCurrent()) {
           setIsSearching(false);
         } else if (searchLog) {
-          // the newer run has its own activity row; this one must not spin forever
-          closeActivity(searchLog, 'Search superseded by a newer run');
+          // the row belongs to this run, so it closes it — as a cancel or as a supersession, never
+          // left spinning because a newer run owns the screen
+          closeActivity(
+            searchLog,
+            controller.signal.aborted ? 'Search cancelled' : 'Search superseded by a newer run',
+          );
         }
       }
     },
-    [engines, useDorks, presets, selectedPreset, logActivity, saveSources, abortStream, closeActivity],
+    [engines, useDorks, presets, selectedPreset, logActivity, saveSources, abortStream, closeActivity, guard],
   );
 
   /** true when the run that just finished was superseded or cancelled: its answer is stale */
-  const runAborted = useCallback(() => Boolean(runRef.current?.signal.aborted), []);
+  const runAborted = useCallback(() => guard.aborted, [guard]);
 
   const cancelSearch = useCallback(() => {
-    const running = runRef.current;
-    if (!running || running.signal.aborted) return false;
-    running.abort();
+    // superseding, not merely aborting: the signal alone cannot stop an engine that ignores it
+    if (!guard.supersede()) return false;
     setStatus('Search cancelled');
     setIsSearching(false);
     return true;
-  }, []);
+  }, [guard]);
 
   /**
    * Batch a whole dork lane: every template in the lane becomes its own query against the
@@ -208,12 +276,11 @@ export function useSearch({
       const queries = expandLane(lane, cleanTarget, 10);
       if (queries.length === 0) return;
 
-      // a lane run is a search too: cancelling the previous run keeps a slow lane from landing on
+      // a lane run is a search too: superseding the previous run keeps a slow lane from landing on
       // top of whatever the user asked for next
-      runRef.current?.abort();
-      const controller = new AbortController();
-      runRef.current = controller;
-      const isLaneCurrent = () => runRef.current === controller;
+      const run = guard.begin();
+      const controller = run.controller;
+      const isLaneCurrent = run.isCurrent;
 
       const conversationId = await ensureConversation(`${lane}: ${cleanTarget}`);
 
@@ -231,6 +298,7 @@ export function useSearch({
       setResults([]);
       setIssues([]);
       setLaneYield([]);
+      setRelaxedGate(false);
       setStatus(`Lane "${lane}" — starting ${queries.length} queries`);
       await logActivity(
         conversationId,
@@ -302,10 +370,11 @@ export function useSearch({
         };
         await Promise.all(Array.from({ length: Math.min(2, queries.length) }, worker));
 
-        const { results: fused, laneYield: yields } = fuseResultsDetailed(cleanTarget, perEngineQuery, { limit: 60 });
+        const { results: fused, laneYield: yields, relaxed } = fuseResultsDetailed(cleanTarget, perEngineQuery, { limit: 60 });
         if (!isLaneCurrent()) return;
         setResults(fused);
         setLaneYield(summarizeLaneYield(yields));
+        setRelaxedGate(relaxed);
         await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { lane, queries }, 'completed');
         if (fused.length === 0) {
           await logActivity(
@@ -325,7 +394,7 @@ export function useSearch({
         }
       }
     },
-    [engines, presets, selectedPreset, isSearching, isStreaming, logActivity, ensureConversation, saveSources],
+    [engines, presets, selectedPreset, isSearching, isStreaming, logActivity, ensureConversation, saveSources, guard],
   );
 
   return {
@@ -335,6 +404,7 @@ export function useSearch({
     status,
     issues,
     laneYield,
+    relaxedGate,
     lastQuery,
     performSearch,
     cancelSearch,

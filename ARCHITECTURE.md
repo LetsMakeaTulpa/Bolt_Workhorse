@@ -132,6 +132,10 @@ did), `ranking-harness` (`node experiments/ranking-harness.mjs` — fixed query 
 judgements, before/after nDCG/MRR; `--check` fails on regression). The query set is *contested*:
 queries pair results with near-identical term coverage so only engine trust or a date can separate
 them. An uncontested set scores the same under any weighting and silently measures nothing.
+The `fresh-tie` and `semantic-tie` queries go further: their pair is equal on coverage by
+construction, so relevance ties and only the recency bonus or the intent weights can order them.
+`--check` verifies that with `termCoverage` rather than taking the fixture's word for it — equal
+coverage, no entity merge, and a tie class that still moves by at least 0.05 nDCG.
 `ranking-sweep` (`node experiments/ranking-sweep.mjs`) sweeps one constant at a time, ablates each
 constant to show what removing it costs (`--ablate`), and checks leave-one-out stability
 (`--stability`). It also reports `margin`, the order-free gap between the best answer and the best

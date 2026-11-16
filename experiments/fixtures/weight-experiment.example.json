@@ -1,0 +1,5 @@
+{
+  "description": "Example before/after spec for `ranking-harness --compare`. Copy it, change the numbers, and the same fixed query set scores the old and new weights side by side. `weights` is \"flat\" (pre-intent table: keyword routing only), \"intent\" (engine character as applied in fusion) or an explicit { engine: number } map. Omit `recency` to leave fusion's default in place.",
+  "before": { "label": "flat trust, no freshness", "weights": "flat", "recency": false },
+  "after": { "label": "current intent weights + freshness", "weights": "intent" }
+}

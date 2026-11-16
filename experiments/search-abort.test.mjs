@@ -1,20 +1,29 @@
 // A superseded search must stop working, not just have its answer dropped. Abort has to reach the
 // network, or a cancelled run keeps spending provider rate limit for a result nobody will read.
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
-const API = '/tmp/fieldwork-abort-api.mjs';
-const CLIENT = '/tmp/fieldwork-abort-client.mjs';
+// The local esbuild JS entry point is run under node directly: spawning `npx` through cmd.exe
+// strips the quotes in --define and turns the value into invalid JSON.
+const DIR = (process.env.ABORT_DIR ?? '/tmp').replaceAll('\\', '/');
+const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const API = `${DIR}/fieldwork-abort-api.mjs`;
+const CLIENT = `${DIR}/fieldwork-abort-client.mjs`;
+const GUARD = `${DIR}/fieldwork-abort-guard.mjs`;
 
 const build = (entry, out, extra = []) =>
-  execFileSync('npx', ['--yes', 'esbuild', entry, '--bundle', '--format=esm', `--outfile=${out}`, '--log-level=error', ...extra], {
-    stdio: 'inherit',
-  });
+  execFileSync(
+    process.execPath,
+    [ESBUILD, entry, '--bundle', '--format=esm', `--outfile=${out}`, '--log-level=error', ...extra],
+    { stdio: 'inherit' },
+  );
 
 build('src/lib/api.ts', API, [
   '--define:import.meta.env.VITE_SUPABASE_URL="https://proxy.test"',
   '--define:import.meta.env.VITE_SUPABASE_ANON_KEY="anon"',
 ]);
 build('src/lib/clientEngines.ts', CLIENT);
+build('src/lib/runGuard.ts', GUARD);
 
 // browser shims: clientEngines touches window timers and the api module reads storage
 const store = new Map();
@@ -24,6 +33,15 @@ globalThis.localStorage = {
   removeItem: (k) => store.delete(k),
 };
 globalThis.window = globalThis;
+// Node 20 has no native WebSocket, and supabase-js builds its realtime client eagerly
+class WebSocketStub {
+  constructor() {}
+  addEventListener() {}
+  removeEventListener() {}
+  send() {}
+  close() {}
+}
+globalThis.WebSocket = WebSocketStub;
 
 const abortError = () => Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
 
@@ -54,8 +72,9 @@ const hangUntilAborted = (_url, init) => {
 
 globalThis.fetch = hangUntilAborted;
 
-const { webSearch } = await import(`${API}?t=${Date.now()}`);
-const { searchClientEngines } = await import(`${CLIENT}?t=${Date.now()}`);
+const { webSearch } = await import(`${pathToFileURL(API).href}?t=${Date.now()}`);
+const { searchClientEngines } = await import(`${pathToFileURL(CLIENT).href}?t=${Date.now()}`);
+const { RunGuard } = await import(`${pathToFileURL(GUARD).href}?t=${Date.now()}`);
 
 let passed = 0;
 const failures = [];
@@ -99,6 +118,27 @@ const results = await run;
 check('a cancelled client run resolves empty', results.length === 0);
 check('no engine streams partials after cancellation', partials.length === 0, JSON.stringify(partials));
 check('cancellation reached the in-flight requests', aborted >= 4, `aborted=${aborted}`);
+
+// 4. supersession: a run invalidated from outside the search path cannot write any more
+const guard = new RunGuard();
+const first = guard.begin();
+check('a fresh run owns the screen', first.isCurrent() && guard.running);
+
+const second = guard.begin();
+check('a newer run supersedes the previous one', !first.isCurrent() && second.isCurrent());
+check('starting a run aborts the one it replaced', first.controller.signal.aborted && !second.controller.signal.aborted);
+
+// the engine-set change: nothing new is started, the old run simply stops owning the result list
+const stale = guard.begin();
+check('superseding reports that something was running', guard.supersede() === true);
+check('a superseded run cannot write its results', stale.isCurrent() === false);
+check('superseding aborts the fetch it invalidated', stale.controller.signal.aborted);
+check('nothing is left running', guard.running === false && guard.aborted === true);
+check('superseding twice is a no-op', guard.supersede() === false);
+
+const freshRun = guard.begin();
+check('a run begun after a supersede is current again', freshRun.isCurrent() && guard.running && !guard.aborted);
+check('the run that was superseded stays stale', stale.isCurrent() === false);
 
 console.log(`\n${passed}/${passed + failures.length} assertions passed`);
 if (failures.length > 0) process.exit(1);

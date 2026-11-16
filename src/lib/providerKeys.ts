@@ -53,6 +53,26 @@ export interface ParseResult {
   rejected: string[];
   /** lines that were structurally wrong (no value, too short, bad URL) */
   invalid: string[];
+  /** numbered names that were accepted under their documented name, e.g. EXA_API_KEY_1 → EXA_API_KEY */
+  aliased: { from: string; to: string }[];
+}
+
+/** People number their keys (`EXA_API_KEY_1`, `TAVILY_API_KEY_2`); the function reads the base name. */
+const NUMBERED = /^(.+)_(\d{1,3})$/;
+
+/**
+ * The secret a pasted name refers to, and the name it will be stored under.
+ *
+ * Numbering is only stripped when the base is a real secret, so `EXA_KEY_1` is still reported as
+ * unreadable instead of being guessed at — the same rule as any other unknown name.
+ */
+function resolveName(name: string): { name: string; def: ProviderKeyDef } | null {
+  const direct = BY_NAME.get(name);
+  if (direct) return { name, def: direct };
+  const numbered = name.match(NUMBERED);
+  if (!numbered) return null;
+  const base = BY_NAME.get(numbered[1]);
+  return base ? { name: numbered[1], def: base } : null;
 }
 
 const LINE = /^(?:export\s+)?([A-Za-z][A-Za-z0-9_]{2,63})\s*[=:]\s*(.+)$/;
@@ -61,6 +81,7 @@ export function parseProviderKeys(input: string): ParseResult {
   const keys: ParsedKey[] = [];
   const rejected: string[] = [];
   const invalid: string[] = [];
+  const aliased: { from: string; to: string }[] = [];
   const seen = new Set<string>();
 
   for (const raw of input.split(/\r?\n/)) {
@@ -73,27 +94,30 @@ export function parseProviderKeys(input: string): ParseResult {
       continue;
     }
 
-    const name = match[1].toUpperCase();
+    const typedName = match[1].toUpperCase();
     const value = match[2].trim().replace(/^["']|["']$/g, '');
-    const def = BY_NAME.get(name);
-    if (!def) {
-      rejected.push(name);
+    const resolved = resolveName(typedName);
+    if (!resolved) {
+      rejected.push(typedName);
       continue;
     }
+    // validation messages name the line as pasted, so a typo is findable in the paste box
     if (value.length < 8) {
-      invalid.push(name);
+      invalid.push(typedName);
       continue;
     }
-    if (def.url && !/^https?:\/\//i.test(value)) {
-      invalid.push(name);
+    if (resolved.def.url && !/^https?:\/\//i.test(value)) {
+      invalid.push(typedName);
       continue;
     }
-    if (seen.has(name)) continue;
-    seen.add(name);
-    keys.push({ name, value });
+    // two numbered variants of one secret are one row: the first wins, as with an exact duplicate
+    if (seen.has(resolved.name)) continue;
+    seen.add(resolved.name);
+    if (resolved.name !== typedName) aliased.push({ from: typedName, to: resolved.name });
+    keys.push({ name: resolved.name, value });
   }
 
-  return { keys, rejected, invalid };
+  return { keys, rejected, invalid, aliased };
 }
 
 /** Human summary of what a paste will do, e.g. "Exa, Tavily". */

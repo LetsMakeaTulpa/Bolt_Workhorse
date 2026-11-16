@@ -5,7 +5,9 @@
  * The maths lives here rather than in the component so it can be tested against the same
  * `queryIntent` / `recencyWeight` the ranking actually used — the badge cannot drift from the score.
  */
-import { queryIntent, recencyWeight, type QueryIntent } from './fusion';
+import { engineWeights, queryIntent, recencyWeight, type QueryIntent } from './fusion';
+
+const DAY = 86_400_000;
 
 export interface IntentSummary {
   label: string;
@@ -38,4 +40,98 @@ export function freshnessBonus(published: string | undefined, intent: QueryInten
 
 export function summaryForQuery(query: string, now = Date.now()): IntentSummary {
   return describeIntent(queryIntent(query, now));
+}
+
+export type RecencyTier = 'fresh' | 'recent' | 'aging' | 'old' | 'undated' | 'ignored';
+
+export interface RecencyBadge {
+  tier: RecencyTier;
+  /** the exact multiplier fusion applied: 1 when the date played no part */
+  multiplier: number;
+  /** the publication date as the badge shows it, or null when there is none */
+  published: string | null;
+  detail: string;
+}
+
+/**
+ * Why a date did or did not move this result.
+ *
+ * Tiers mirror the decay steps in `recencyWeight` (30 / 180 / 730 days) so the badge cannot claim
+ * "fresh" for something the ranking already treats as old, and `ignored` is a state of its own: a
+ * date on a timeless or identifier query is not a small boost, it is no boost, and saying so is the
+ * point of the badge.
+ */
+export function recencyBadge(published: string | undefined, intent: QueryIntent, now = Date.now()): RecencyBadge {
+  const multiplier = freshnessBonus(published, intent, now);
+  const at = published ? Date.parse(published) : NaN;
+  if (!published || !Number.isFinite(at)) {
+    return {
+      tier: 'undated',
+      multiplier: 1,
+      published: null,
+      detail: 'No publication date, so freshness could not move this result in either direction.',
+    };
+  }
+
+  const date = published.slice(0, 10);
+  const ageDays = Math.max(0, (now - at) / DAY);
+  const age = ageDays < 1 ? 'today' : ageDays < 60 ? `${Math.round(ageDays)}d ago` : `${Math.round(ageDays / 30)}mo ago`;
+
+  if (intent.fresh <= 0) {
+    return {
+      tier: 'ignored',
+      multiplier: 1,
+      published,
+      detail: `Published ${date} (${age}). This query is not recency-seeking, so the date did not move the result.`,
+    };
+  }
+
+  const tier: RecencyTier = ageDays <= 30 ? 'fresh' : ageDays <= 180 ? 'recent' : ageDays <= 730 ? 'aging' : 'old';
+  return {
+    tier,
+    multiplier,
+    published,
+    detail: `Published ${date} (${age}) — freshness ×${multiplier.toFixed(2)} for a ${intent.fresh >= 1 ? 'recency-seeking' : 'partly recency-seeking'} query.`,
+  };
+}
+
+export interface IntentBadge {
+  /** the engine that supplied this result, without any `+` merge suffixes */
+  engine: string;
+  /** the query's intent class, as the panel labels it */
+  intent: string;
+  /** the weight fusion gave this engine */
+  weight: number;
+  /** the same engine's weight with no intent routing applied */
+  base: number;
+  delta: number;
+  detail: string;
+}
+
+/**
+ * Why this engine was trusted more or less for this query.
+ *
+ * The base weight is measured with an empty query, which earns no intent or keyword routing, so
+ * `delta` is exactly what the intent model added or took away for this engine.
+ */
+export function intentBadge(engine: string, query: string, now = Date.now()): IntentBadge | null {
+  const primary = String(engine ?? '').split('+')[0].trim();
+  if (!primary) return null;
+  // the weighted side must be the same call fusion makes, which applies engine character; the base
+  // side is an empty query with character disabled, so it carries no routing at all
+  const weight = engineWeights(query, now)[primary];
+  if (typeof weight !== 'number' || !Number.isFinite(weight)) return null;
+  const base = engineWeights('', now, { character: false })[primary] ?? weight;
+  const delta = weight - base;
+  const intent = describeIntent(queryIntent(query, now));
+  return {
+    engine: primary,
+    intent: intent.label,
+    weight,
+    base,
+    delta,
+    detail:
+      `${primary} weighted ×${weight.toFixed(2)} against a flat base of ×${base.toFixed(2)} ` +
+      `(${delta >= 0 ? '+' : ''}${delta.toFixed(2)}) for this query, which reads as ${intent.label}.`,
+  };
 }

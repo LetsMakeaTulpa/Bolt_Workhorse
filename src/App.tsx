@@ -4,6 +4,8 @@ import { useEngineKeys } from './hooks/useEngineKeys';
 import { supabase } from './lib/supabase';
 import { fetchModels, chatCompletion, fallbackChain } from './lib/api';
 import { DEFAULT_ENGINES } from './lib/engines';
+import { systemPromptFor } from './lib/promptVariant';
+import { buildGapReport } from './lib/emptyResult';
 import type {
   Conversation, Message, Source, ModelInfo, Finding,
   ResearchPreset, ActivityLog, SourceRecord,
@@ -231,6 +233,7 @@ export default function App() {
     status: searchStatus,
     issues: engineIssues,
     laneYield,
+    relaxedGate,
     lastQuery: lastSearchQuery,
     performSearch,
     cancelSearch: cancelSearchRun,
@@ -292,27 +295,31 @@ export default function App() {
       searchResultsData = await performSearch(content, conv.id);
       // a newer search replaced this one, so this turn has nothing to answer with
       if (runAborted()) return;
+
+      // Chat with search built in: a thin search run informs the answer, it never replaces it. The
+      // gaps are recorded and the model answers from its own knowledge, told to say it is unverified.
+      if (searchResultsData.length === 0) {
+        const report = buildGapReport({
+          query: content,
+          engines,
+          issues: engineIssues,
+          laneYield: laneYield,
+        });
+        await logActivity(
+          conv.id,
+          'search',
+          `No usable sources this run — answering from the model, unverified (${report.gaps.length} gap${report.gaps.length === 1 ? '' : 's'})`,
+          { engines, gaps: report.gaps },
+          'completed',
+        );
+      }
     }
 
     // Build LLM messages
     const llmMessages: { role: string; content: string }[] = [{
       role: 'system',
-      content: `You are Fieldwork, a research assistant. You search the open, deep and dark web, weigh the sources and answer with citations.
-
-When search results are provided:
-- Open with a 2-4 sentence summary of what the sources collectively show. Lead with the answer, then the strongest caveat.
-- Then the detail that matters: findings, numbers, dates, names, each cited as [1], [2]. Never cite a source that does not support the sentence it is attached to.
-- Mark what is established versus merely claimed, and say so plainly when sources disagree instead of averaging them.
-- If the results are thin, stale or off-topic, say that in one line rather than padding.
-
-End every answer with this section, titled exactly FOLLOW-UPS:
-
-FOLLOW-UPS
-- one question a researcher would ask next
-- a second question
-- a third question
-
-Each question must be answerable by a search. Nothing may follow that section. Keep answers tight: match length to the question, no preamble, no restating the question back.`,
+      // the built-in prompt, or the variant this account saved in Settings
+      content: systemPromptFor(session?.user?.id),
     }];
 
     if (searchResultsData.length > 0) {
@@ -322,6 +329,11 @@ Each question must be answerable by a search. Nothing may follow that section. K
       llmMessages.push({
         role: 'system',
         content: `Web search results for "${content}" (ranked by Reciprocal Rank Fusion):\n\n${searchContext}\n\nUse these sources to inform your response. Cite sources by their citation ID. Note the provider and assess source credibility.`,
+      });
+    } else if (shouldSearch) {
+      llmMessages.push({
+        role: 'system',
+        content: `Web search for "${content}" returned no usable sources this run (engines tried: ${engines.join(', ')}). Answer the question from your own knowledge. Do not invent URLs, titles or citation IDs, and state plainly that this answer is not backed by retrieved sources.`,
       });
     }
 
@@ -604,6 +616,7 @@ Each question must be answerable by a search. Nothing may follow that section. K
               searchLabel={searchStatus}
               engineIssues={engineIssues}
               laneYield={laneYield}
+              relaxedGate={relaxedGate}
               rawOnly={rawSearchOnly}
               onRawOnlyChange={setRawSearchOnly}
               engines={engines}

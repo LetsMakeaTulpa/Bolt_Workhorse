@@ -30,6 +30,38 @@ export interface GapReport {
   gaps: string[];
 }
 
+/**
+ * True when an assistant message is the terminal gap report rather than an answer. The marker is the
+ * first words `buildGapReport` writes, so it survives any later edit to the wording after it.
+ */
+export function isGapReport(content: string): boolean {
+  return /^\s*\*\*No sources\.\*\*/.test(content);
+}
+
+/** Everything that restricts recall: an operator, and the quote marks that force an exact phrase. */
+const RESTRICTING = /\b(?:site|inurl|intitle|allintitle|intext|filetype|ext|related|link|cache|before|after):\S+/gi;
+
+/**
+ * A wider query for a search that found nothing.
+ *
+ * Two things narrow a search: restricting syntax, and the qualifier a question ends with. Operators
+ * and quotes go first, because they are what a search engine obeys literally — and only those, so
+ * `CVE-2024-3094` keeps its hyphens instead of becoming three loose numbers. When the query carries
+ * no such syntax, the last word is dropped and the rest kept as written.
+ */
+export function broadenQuery(query: string): string {
+  const original = query.trim();
+  const unwrapped = original
+    .replace(RESTRICTING, ' ')
+    .replace(/["'“”]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (unwrapped && unwrapped !== original) return unwrapped;
+
+  const words = original.split(/\s+/).filter(Boolean);
+  return words.length > 3 ? words.slice(0, -1).join(' ') : original;
+}
+
 const label = (engine: string) => ENGINE_LABELS.get(engine) ?? engine;
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;

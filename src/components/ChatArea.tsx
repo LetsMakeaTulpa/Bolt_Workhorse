@@ -93,6 +93,7 @@ export function ChatArea({
                   onRetrySearch={onRetrySearch}
                   onSaveResults={onSaveResults}
                   onFollowUp={onFollowUp}
+                  onRunLane={onRunLane}
                 />
               );
             })}

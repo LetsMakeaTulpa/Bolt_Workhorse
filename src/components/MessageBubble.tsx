@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
 import { Message, Source } from '../types';
-import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight } from 'lucide-react';
+import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { splitFollowUps } from '../lib/followUps';
 import { splitClaimLedger } from '../lib/claimLedger';
 import type { LedgerClaim } from '../lib/claimLedger';
 import { ClaimLedgerTable } from './ClaimLedgerTable';
+import { broadenQuery, isGapReport } from '../lib/emptyResult';
+import { DORK_LANES } from '../lib/dorks';
 
 interface MessageBubbleProps {
   message: Message;
@@ -16,10 +18,13 @@ interface MessageBubbleProps {
   onRetrySearch?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
+  /** run one dork lane against a target, offered from a gap report */
+  onRunLane?: (lane: string, target: string) => void;
 }
 
-export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSaveResults, onFollowUp }: MessageBubbleProps) {
+export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSaveResults, onFollowUp, onRunLane }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  const [lanePickerOpen, setLanePickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'known'>('idle');
@@ -147,6 +152,51 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{prose}</ReactMarkdown>
               </div>
               {claims.length > 0 && <ClaimLedgerTable claims={claims} />}
+              {/* a gap report ends in advice; the advice is worth more as the action itself */}
+              {!isUser && !isStreaming && isGapReport(message.content) && query && (
+                <div className="mt-2 border-t border-border-subtle pt-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onRetrySearch?.(broadenQuery(query))}
+                      disabled={!onRetrySearch}
+                      title={`Search again for “${broadenQuery(query)}” — operators and the most specific words removed`}
+                      className="flex items-center gap-1 rounded-md border border-accent/30 bg-accent-subtle px-2 py-1 text-[10px] text-accent transition-colors hover:bg-accent hover:text-bg-base disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      <Search size={10} />
+                      Broader: “{broadenQuery(query)}”
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLanePickerOpen((open) => !open)}
+                      aria-expanded={lanePickerOpen}
+                      disabled={!onRunLane}
+                      className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[10px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      Run a lane
+                      <ChevronDown size={10} className={`transition-transform ${lanePickerOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+                  {lanePickerOpen && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {DORK_LANES.map((lane) => (
+                        <button
+                          key={lane}
+                          type="button"
+                          onClick={() => {
+                            onRunLane?.(lane, query);
+                            setLanePickerOpen(false);
+                          }}
+                          title={`Run every ${lane} dork against “${query}”`}
+                          className="rounded-full border border-border-subtle bg-bg-elevated px-2 py-0.5 text-[10px] text-text-secondary transition-colors hover:border-accent/30 hover:text-text-primary"
+                        >
+                          {lane}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>

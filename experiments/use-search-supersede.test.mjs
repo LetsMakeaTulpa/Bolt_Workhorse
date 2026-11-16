@@ -123,7 +123,7 @@ const options = {
   selectedPreset: 'general',
   isStreaming: false,
   logActivity: async (conversationId, activity_type, description, details, status) => {
-    log.activity.push({ conversationId, activity_type, description, status: status ?? 'completed' });
+    log.activity.push({ conversationId, activity_type, description, details: details ?? {}, status: status ?? 'completed' });
     return {
       id: `activity-${++rowId}`,
       conversation_id: conversationId,
@@ -185,6 +185,23 @@ check('the newer run owns the results', titles().join('|') === 'CRISPR off-targe
 check('the newer run is what the panel reports', view.lastQuery === 'crispr off-target prediction', view.lastQuery);
 check('a new search also stops the answer that was streaming', log.aborts === 2, `aborts=${log.aborts}`);
 check('the newer run finished searching', view.isSearching === false);
+
+// The composer's lane strip is gone once the next search starts; the trail is what a past search
+// can still be judged by, so the row has to carry the per-engine yield.
+const yieldRows = log.activity.filter((row) => Array.isArray(row.details?.lane_yield));
+check('the trail records a lane-yield row for the run', yieldRows.length === 1, `rows=${yieldRows.length}`);
+check(
+  'the lane-yield row names the engine and its counts',
+  yieldRows[0]?.details.lane_yield?.[0]?.engine === 'duckduckgo' &&
+    yieldRows[0]?.details.lane_yield?.[0]?.returned > 0,
+  JSON.stringify(yieldRows[0]?.details?.lane_yield),
+);
+check(
+  'the row says which engine wasted results, in words',
+  /Lane yield:/.test(yieldRows[0]?.description ?? ''),
+  yieldRows[0]?.description,
+);
+check('the gate verdict rides along with it', yieldRows[0]?.details?.gate_relaxed === false, String(yieldRows[0]?.details?.gate_relaxed));
 
 const abortedFirstRun = requests.at(-2);
 check('the superseded run had its request cancelled', abortedFirstRun?.signal?.aborted === true);

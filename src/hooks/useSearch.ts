@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { webSearch } from '../lib/api';
 import { CLIENT_ENGINE_IDS, searchClientEngines } from '../lib/clientEngines';
-import { fuseResultsDetailed, summarizeLaneYield } from '../lib/fusion';
+import { describeLaneYield, fuseResultsDetailed, summarizeLaneYield } from '../lib/fusion';
 import type { LaneYield } from '../lib/fusion';
 import { RunGuard } from '../lib/runGuard';
 import {
@@ -13,6 +13,20 @@ import {
 } from '../lib/engines';
 import { expandLane } from '../lib/dorks';
 import type { ActivityLog, ResearchPreset, Source } from '../types';
+
+/**
+ * What the activity row stores about a run's yield: per engine, the counts plus the titles the
+ * gate threw away. Titles are capped so one bad engine cannot bloat the row.
+ */
+function laneYieldDetail(rows: LaneYield[]) {
+  return rows.map((row) => ({
+    engine: row.engine,
+    returned: row.returned,
+    kept: row.kept,
+    offTopic: row.offTopic,
+    dropped: (row.dropped ?? []).map((item) => item.title).slice(0, 10),
+  }));
+}
 
 /**
  * Search orchestration: which engines run, how their lists are fused, which run owns the screen,
@@ -212,13 +226,20 @@ export function useSearch({
         const { results: fused, laneYield: yields, relaxed } = fuseResultsDetailed(query, perEngine, { limit: 40 });
         if (!isCurrent()) return [];
 
+        const yieldReport = summarizeLaneYield(yields);
         setResults(fused);
-        setLaneYield(summarizeLaneYield(yields));
+        setLaneYield(yieldReport);
         setRelaxedGate(relaxed);
 
         await logActivity(convId, 'rank', `Reciprocal Rank Fusion applied to ${fused.length} results`, {
           engines_used: [...(serverResponse?.engines_used ?? []), ...browserEngines, ...spareEngines],
           queries_used: serverResponse?.queries_used ?? [query],
+        });
+        // the composer's lane strip disappears with the next search; the trail keeps what the gate
+        // cost this engine, and which results it cost
+        await logActivity(convId, 'rank', describeLaneYield(yieldReport, relaxed), {
+          lane_yield: laneYieldDetail(yieldReport),
+          gate_relaxed: relaxed,
         });
         await logActivity(convId, 'deduplicate', `Deduplicated and scored ${fused.length} unique sources`);
 
@@ -372,10 +393,16 @@ export function useSearch({
 
         const { results: fused, laneYield: yields, relaxed } = fuseResultsDetailed(cleanTarget, perEngineQuery, { limit: 60 });
         if (!isLaneCurrent()) return;
+        const laneReport = summarizeLaneYield(yields);
         setResults(fused);
-        setLaneYield(summarizeLaneYield(yields));
+        setLaneYield(laneReport);
         setRelaxedGate(relaxed);
         await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { lane, queries }, 'completed');
+        await logActivity(conversationId, 'rank', describeLaneYield(laneReport, relaxed), {
+          lane,
+          lane_yield: laneYieldDetail(laneReport),
+          gate_relaxed: relaxed,
+        });
         if (fused.length === 0) {
           await logActivity(
             conversationId,

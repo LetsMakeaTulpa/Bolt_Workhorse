@@ -24,7 +24,7 @@ execFileSync(
 );
 
 // a file URL, not a bare path: Windows would read `C:/…` as the protocol `c:`
-const { engineWeights, fuseResults, fuseResultsDetailed, laneContribution, queryIntent, recencyWeight, summarizeLaneYield } = await import(
+const { describeLaneYield, engineWeights, fuseResults, fuseResultsDetailed, laneContribution, queryIntent, recencyWeight, summarizeLaneYield } = await import(
   `${pathToFileURL(MODULE).href}?t=${Date.now()}`
 );
 
@@ -236,6 +236,67 @@ const gated = fuseResultsDetailed(
 );
 check('a normal run is not marked relaxed', gated.relaxed === false);
 check('no candidates is not a relaxed page', fuseResultsDetailed('q', { exa: [] }, { now: NOW }).relaxed === false);
+
+// A gate that only reports counts cannot be judged. It must name the result it threw away, or the
+// user has no way to tell an over-eager gate from a correct one.
+const mixed = fuseResultsDetailed(
+  'graph neural networks',
+  {
+    exa: [
+      { title: 'Graph neural networks survey', url: 'https://gnn.example.com/s', snippet: 'graph neural networks', source_engine: 'exa' },
+      { title: 'Roman Republic', url: 'https://rome.example/r', snippet: 'Classical civilisation', source_engine: 'exa' },
+    ],
+  },
+  { now: NOW },
+);
+const mixedRow = mixed.laneYield.find((row) => row.lane === 'exa');
+check('the gate names the result it dropped', mixedRow?.dropped?.[0]?.title === 'Roman Republic', JSON.stringify(mixedRow?.dropped));
+check(
+  'a dropped entry carries the coverage the gate judged',
+  typeof mixedRow?.dropped?.[0]?.rel === 'number' && mixedRow.dropped[0].rel < 0.35,
+  String(mixedRow?.dropped?.[0]?.rel),
+);
+check('the kept result is not listed as dropped', !(mixedRow?.dropped ?? []).some((item) => /survey/i.test(item.title)), JSON.stringify(mixedRow?.dropped));
+check('a dropped item still counts towards the off-topic total', mixedRow?.offTopic === (mixedRow?.dropped ?? []).length, `${mixedRow?.offTopic} vs ${mixedRow?.dropped?.length}`);
+check(
+  'a relaxed gate drops nothing, because it kept everything',
+  offTopic.laneYield.every((row) => (row.dropped ?? []).length === 0),
+  JSON.stringify(offTopic.laneYield),
+);
+// The trail outlives the composer strip, so it has to say who wasted what, not only how much.
+check(
+  'the trail line names the engine that lost results',
+  describeLaneYield([{ lane: 'exa', engine: 'exa', returned: 5, kept: 3, offTopic: 2, dropped: [] }]) ===
+    'Lane yield: 1 engine lost results to the gate — exa 3/5',
+  describeLaneYield([{ lane: 'exa', engine: 'exa', returned: 5, kept: 3, offTopic: 2, dropped: [] }]),
+);
+check(
+  'a clean run says so instead of inventing waste',
+  describeLaneYield([{ lane: 'exa', engine: 'exa', returned: 4, kept: 4, offTopic: 0, dropped: [] }]) ===
+    'Lane yield: all 4 results across 1 lane survived the gate',
+  describeLaneYield([{ lane: 'exa', engine: 'exa', returned: 4, kept: 4, offTopic: 0, dropped: [] }]),
+);
+check(
+  'a relaxed gate is recorded as relaxed, not as a loss',
+  /nothing cleared the gate/.test(describeLaneYield([{ lane: 'exa', engine: 'exa', returned: 2, kept: 2, offTopic: 0, dropped: [] }], true)),
+);
+check(
+  'several wasted engines are all named',
+  describeLaneYield([
+    { lane: 'exa', engine: 'exa', returned: 5, kept: 3, offTopic: 2, dropped: [] },
+    { lane: 'tavily', engine: 'tavily', returned: 2, kept: 0, offTopic: 2, dropped: [] },
+  ]).includes('exa 3/5, tavily 0/2'),
+);
+check(
+  'summarising keeps the dropped titles from every lane',
+  (() => {
+    const merged = summarizeLaneYield([
+      { lane: 'exa·q1', engine: 'exa', returned: 2, kept: 1, offTopic: 1, dropped: [{ title: 'A', rel: 0.1 }] },
+      { lane: 'exa·q2', engine: 'exa', returned: 1, kept: 1, offTopic: 0, dropped: [] },
+    ]);
+    return merged.length === 1 && merged[0].dropped.length === 1 && merged[0].dropped[0].title === 'A';
+  })(),
+);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);

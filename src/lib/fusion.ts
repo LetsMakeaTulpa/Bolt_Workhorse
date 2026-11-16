@@ -356,6 +356,17 @@ export interface LaneYield {
   kept: number;
   /** `returned - kept` */
   offTopic: number;
+  /**
+   * What the gate actually threw away, not just how much: a count says something was lost, a title
+   * says whether losing it was right.
+   */
+  dropped: DroppedResult[];
+}
+
+export interface DroppedResult {
+  title: string;
+  /** IDF-weighted query coverage, 0–1 — the number the gate compared against its threshold */
+  rel: number;
 }
 
 /**
@@ -373,8 +384,26 @@ export function summarizeLaneYield(rows: LaneYield[]): LaneYield[] {
     current.returned += row.returned;
     current.kept += row.kept;
     current.offTopic += row.offTopic;
+    current.dropped = [...(current.dropped ?? []), ...(row.dropped ?? [])];
   }
   return [...merged.values()];
+}
+
+/**
+ * One line for the activity trail. It names the engines that lost results and how many, because a
+ * past search can only be judged after the fact if the record says who wasted what — the lane-yield
+ * strip in the composer is gone as soon as the next search starts.
+ */
+export function describeLaneYield(rows: LaneYield[], relaxed = false): string {
+  if (rows.length === 0) return 'Lane yield: no engine reported';
+  const produced = rows.reduce((sum, row) => sum + row.returned, 0);
+  if (relaxed) return `Lane yield: nothing cleared the gate, so all ${produced} results were kept anyway`;
+  const wasted = rows.filter((row) => row.offTopic > 0);
+  if (wasted.length === 0) {
+    return `Lane yield: all ${produced} results across ${rows.length} lane${rows.length === 1 ? '' : 's'} survived the gate`;
+  }
+  const detail = wasted.map((row) => `${row.engine} ${row.kept}/${row.returned}`).join(', ');
+  return `Lane yield: ${wasted.length} engine${wasted.length === 1 ? '' : 's'} lost results to the gate — ${detail}`;
 }
 
 export interface LaneContribution {
@@ -438,7 +467,7 @@ export function fuseResultsDetailed(
   // every lane gets a row up front, so an engine that answered with nothing still says so
   const yieldByLane = new Map<string, LaneYield>();
   for (const lane of Object.keys(lists)) {
-    yieldByLane.set(lane, { lane, engine: lane.split('·')[0], returned: 0, kept: 0, offTopic: 0 });
+    yieldByLane.set(lane, { lane, engine: lane.split('·')[0], returned: 0, kept: 0, offTopic: 0, dropped: [] });
   }
 
   const all: Candidate[] = [];
@@ -491,6 +520,13 @@ export function fuseResultsDetailed(
   const relaxed = kept.length === 0 && all.length > 0;
   if (relaxed) kept = all;
   for (const item of kept) yieldByLane.get(item.lane)!.kept += 1;
+  // name the casualties: a relaxed gate dropped nothing, because it kept everything
+  if (!relaxed) {
+    for (const item of all) {
+      if (item.rel >= gate) continue;
+      yieldByLane.get(item.lane)!.dropped.push({ title: item.title, rel: Number(item.rel.toFixed(3)) });
+    }
+  }
   const strong = kept.filter((item) => item.rel >= 0.5);
   const tail = kept.filter((item) => item.rel < 0.5);
 

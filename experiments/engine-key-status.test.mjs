@@ -1,5 +1,5 @@
 // Whether the composer can tell an engine is unusable before it runs.
-// Run: bash scripts/smoke.sh, which bundles both modules inside the project (so their external
+// Run: npm run smoke, which bundles both modules inside the project (so their external
 // `react` resolves) and sets KEYSTATUS_MODULE and KEYROW_MODULE to them
 import { bundle, tmpPath } from './lib/build.mjs';
 import { mkdirSync } from 'node:fs';

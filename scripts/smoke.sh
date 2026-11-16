@@ -121,6 +121,19 @@ search_abort() {
 # 4g. a superseded search stops its requests instead of finishing and overwriting
 run "search abort" search_abort
 
+search_supersede() {
+  # renders the real hook: react-test-renderer is test-only and installed with --no-save, and the
+  # bundle is written inside the project so its external `react` resolves to the copy under test
+  node experiments/use-search-supersede.test.mjs
+}
+
+# 4g2. the same property from the outside: a stale run that ignores its abort cannot reach the screen
+if [ -d node_modules/react-test-renderer ]; then
+  run "useSearch supersession" search_supersede
+else
+  skip "useSearch supersession" "react-test-renderer unavailable (npm install --no-save react-test-renderer@18.3.1)"
+fi
+
 key_status() {
   # inside the project so the external `react` in the component bundle resolves to the same copy
   # the test renders with; a /tmp bundle cannot see node_modules

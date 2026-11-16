@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square } from 'lucide-react';
+import { Search, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square, FileText } from 'lucide-react';
+import { ANSWER_BUDGET_WORDS, type PromptVariantStatus } from '../lib/promptVariant';
 import { DORK_ENGINE_NOTE, DORK_OPERATORS, DORK_TEMPLATES } from '../lib/dorks';
 import { ENGINE_CATALOG, ENGINE_GROUPS, SEARCH_SCOPES, matchScope, type EngineIssue } from '../lib/engines';
 import { engineKeyStatus, type KeyState } from '../lib/engineKeyStatus';
@@ -65,6 +66,8 @@ interface SearchBarProps {
   issues?: EngineIssue[];
   /** secret names the deployment reported holding; null when it could not be asked */
   deploymentSecrets?: string[] | null;
+  /** which system prompt the next turn sends — a variant answers differently, so it is named here */
+  promptStatus?: PromptVariantStatus;
 }
 
 export function SearchBar({
@@ -76,6 +79,7 @@ export function SearchBar({
   onUseDorksChange,
   rawOnly,
   onRawOnlyChange,
+  promptStatus,
   disabled,
   searching = false,
   onCancel,
@@ -327,6 +331,21 @@ export function SearchBar({
             <SlidersHorizontal size={11} />
             Dorks {useDorks ? 'on' : 'off'}
           </button>
+
+          {/* A variant changes behaviour, not tone, so it is named where the question is typed. */}
+          {promptStatus?.source === 'variant' && (
+            <span
+              title={`Answers use the variant saved in Settings (${promptStatus.words} words${promptStatus.overBudget ? `, over the ${ANSWER_BUDGET_WORDS}-word budget` : ''}), not the built-in prompt.`}
+              className={`flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-1 text-[10px] ${
+                promptStatus.overBudget
+                  ? 'border-warning/40 bg-warning-subtle text-warning'
+                  : 'border-accent/30 bg-accent-subtle text-accent'
+              }`}
+            >
+              <FileText size={10} />
+              Custom prompt · {promptStatus.words}w
+            </span>
+          )}
 
           {dorksOpen && (
             <>

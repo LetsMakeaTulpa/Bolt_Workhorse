@@ -5,6 +5,7 @@ import { EngineKeyRow } from './EngineKeyRow';
 import { WelcomeScreen } from './WelcomeScreen';
 import { Globe, Loader2, AlertTriangle, Filter } from 'lucide-react';
 import type { EngineIssue } from '../lib/engines';
+import type { PromptVariantStatus } from '../lib/promptVariant';
 import type { LaneYield } from '../lib/fusion';
 import { LaneYieldRow } from './LaneYieldRow';
 
@@ -38,6 +39,8 @@ interface ChatAreaProps {
   storedKeyNames?: string[];
   /** secret names the deployment holds; null when the function could not be asked */
   deploymentKeyNames?: string[] | null;
+  /** which system prompt the next turn sends */
+  promptStatus?: PromptVariantStatus;
   /** the per-account keys table is missing from the project */
   keysUnavailable?: boolean;
   onOpenSettings?: () => void;
@@ -69,6 +72,7 @@ export function ChatArea({
   onCancelSearch,
   storedKeyNames,
   deploymentKeyNames,
+  promptStatus,
   keysUnavailable,
   onOpenSettings,
   onRetrySearch,
@@ -125,6 +129,7 @@ export function ChatArea({
             storedKeys={storedKeyNames ?? []}
             issues={engineIssues}
             deploymentSecrets={deploymentKeyNames ?? null}
+            promptStatus={promptStatus}
           />
           <EngineKeyRow
             engines={engines}

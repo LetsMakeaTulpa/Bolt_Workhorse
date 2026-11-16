@@ -4,7 +4,7 @@ import { useEngineKeys } from './hooks/useEngineKeys';
 import { supabase } from './lib/supabase';
 import { fetchModels, chatCompletion, fallbackChain } from './lib/api';
 import { DEFAULT_ENGINES } from './lib/engines';
-import { systemPromptFor } from './lib/promptVariant';
+import { describePromptVariant, readPromptVariant, systemPromptFor } from './lib/promptVariant';
 import { buildGapReport } from './lib/emptyResult';
 import type {
   Conversation, Message, Source, ModelInfo, Finding,
@@ -534,6 +534,10 @@ export default function App() {
 
   if (!session) return <AuthScreen />;
 
+  // read while rendering: saving a variant in Settings closes the modal, that re-renders this, and
+  // the composer then names the prompt the next turn is going to send
+  const promptStatus = describePromptVariant(readPromptVariant(session.user?.id));
+
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base">
       {showSidebar && (
@@ -630,6 +634,7 @@ export default function App() {
               onCancelSearch={cancelSearch}
               storedKeyNames={storedKeyNames}
               deploymentKeyNames={deploymentKeyNames}
+              promptStatus={promptStatus}
               keysUnavailable={keysUnavailable}
               onOpenSettings={() => setShowSettings(true)}
               searchLabel={searchStatus}

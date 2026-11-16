@@ -1,7 +1,7 @@
 import { Source, Finding, ActivityLog, SourceRecord } from '../types';
 import { queryIntent } from '../lib/fusion';
-import { describeIntent, freshnessBonus } from '../lib/rankExplain';
-import { Search, ExternalLink, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar } from 'lucide-react';
+import { describeIntent, intentBadge, recencyBadge } from '../lib/rankExplain';
+import { Search, ExternalLink, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar, Clock, Sparkles } from 'lucide-react';
 import { SearchMap } from './SearchMap';
 import type { LucideIcon } from 'lucide-react';
 import { useState } from 'react';
@@ -285,8 +285,8 @@ function SourceCard({ source }: { source: CardSource }) {
   const citationId = source.citation_id ?? '';
   const score = source.relevance_score;
   const intent = queryIntent(source.query ?? '');
-  const bonus = freshnessBonus(source.published, intent);
-  const dated = Boolean(source.published);
+  const recency = recencyBadge(source.published, intent);
+  const routing = intentBadge(source.source_engine, source.query ?? '');
 
   return (
     <a
@@ -304,19 +304,38 @@ function SourceCard({ source }: { source: CardSource }) {
       </div>
       <p className="mt-1 text-[10px] text-text-muted line-clamp-2">{snippet}</p>
       <div className="mt-1 truncate text-[10px] text-accent/70">{url}</div>
-      <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[9px] text-text-muted">
-        {score !== undefined && score > 0 && <span>RRF {score.toFixed(4)}</span>}
-        {dated && (
+      <div className="mt-1 flex flex-wrap items-center gap-1 text-[9px]">
+        {score !== undefined && score > 0 && (
+          <span className="font-mono text-text-muted" title="Reciprocal-rank-fusion score for this source">
+            RRF {score.toFixed(4)}
+          </span>
+        )}
+        <span
+          title={recency.detail}
+          className={`flex items-center gap-0.5 rounded border px-1 py-0.5 font-mono ${
+            recency.tier === 'fresh'
+              ? 'border-olive/30 bg-olive-subtle text-olive'
+              : 'border-border-subtle text-text-muted'
+          }`}
+        >
+          <Clock size={8} />
+          {recency.tier === 'undated'
+            ? 'no date'
+            : `${recency.published!.slice(0, 10)} ${recency.tier === 'ignored' ? 'ignored' : `×${recency.multiplier.toFixed(2)}`}`}
+        </span>
+        {routing && (
           <span
-            className={intent.fresh ? 'text-olive' : ''}
-            title={
-              intent.fresh
-                ? `Published ${source.published} — freshness boost ×${bonus.toFixed(1)}`
-                : `Published ${source.published} — the query is not freshness-seeking, so the date did not move it`
-            }
+            title={routing.detail}
+            className={`flex items-center gap-0.5 rounded border px-1 py-0.5 ${
+              routing.delta > 0.001
+                ? 'border-accent/30 bg-accent-subtle text-accent'
+                : routing.delta < -0.001
+                  ? 'border-warning/30 bg-warning-subtle text-warning'
+                  : 'border-border-subtle text-text-muted'
+            }`}
           >
-            {`· ${source.published!.slice(0, 10)}`}
-            {intent.fresh ? ` ×${bonus.toFixed(1)}` : ''}
+            <Sparkles size={8} />
+            {routing.intent} · {routing.engine} ×{routing.weight.toFixed(2)}
           </span>
         )}
       </div>

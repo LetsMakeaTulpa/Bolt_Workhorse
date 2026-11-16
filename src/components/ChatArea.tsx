@@ -25,6 +25,8 @@ interface ChatAreaProps {
   engineIssues?: EngineIssue[];
   /** what each engine returned last run, and what the relevance gate threw away */
   laneYield?: LaneYield[];
+  /** the relevance gate kept nothing, so the closest results were shown anyway */
+  relaxedGate?: boolean;
   rawOnly?: boolean;
   onRawOnlyChange?: (value: boolean) => void;
   engines: string[];
@@ -56,6 +58,7 @@ export function ChatArea({
   searchLabel,
   engineIssues,
   laneYield,
+  relaxedGate,
   rawOnly,
   onRawOnlyChange,
   engines,
@@ -151,6 +154,12 @@ export function ChatArea({
                   <span className="opacity-80">{issue.label}</span>
                 </span>
               ))}
+            </div>
+          )}
+          {relaxedGate && (
+            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-warning">
+              <Filter size={11} />
+              <span>Nothing matched the query closely — showing the closest results anyway</span>
             </div>
           )}
           {(deadLanes.length > 0 || offTopicLanes.length > 0) && (

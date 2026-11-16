@@ -127,6 +127,18 @@ export const SURFACES: SurfaceDef[] = [
 ];
 
 /** Which layers are fully represented by the given engine selection. */
+/**
+ * Engines that answer with no provider key. A search whose chosen engines return nothing retries
+ * on these, so a missing key degrades the ranking instead of blanking the results page.
+ */
+export const KEYLESS_ENGINES = ['duckduckgo', 'wikipedia', 'arxiv', 'github', 'hn', 'crossref', 'europepmc'];
+
+/** The keyless engines not already in `selected`, in preference order. */
+export function fallbackEnginesFor(selected: string[]): string[] {
+  const chosen = new Set(selected);
+  return KEYLESS_ENGINES.filter((engine) => !chosen.has(engine));
+}
+
 export function activeSurfaces(engines: string[]): Surface[] {
   return SURFACES.filter((surface) => surface.engines.every((engine) => engines.includes(engine))).map(
     (surface) => surface.id,

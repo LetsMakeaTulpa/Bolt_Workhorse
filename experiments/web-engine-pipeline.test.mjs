@@ -37,7 +37,8 @@ globalThis.Deno = {
   serve: () => {},
 };
 
-const { configuredSecrets, handleRequest, isKeyRejection, searchWithKeyFallback } = await import(pathToFileURL(OUT).href);
+const { configuredSecrets, ENGINES, handleRequest, isKeyRejection, keyCandidates, searchWithKeyFallback, withKeyRotation } =
+  await import(pathToFileURL(OUT).href);
 
 // ── fixture upstreams, shaped like the real APIs ──────────────────────────────
 const EXA_PAYLOAD = {
@@ -219,6 +220,63 @@ check('an empty result is not a rejection', !isKeyRejection('no results'));
   check('the probe is CORS-readable', resp.headers.get('Access-Control-Allow-Origin') === '*');
 
   env = previous;
+}
+
+// ── 8. several keys per provider: the second is a spare, not a replacement ──
+{
+  const previousFetch = globalThis.fetch;
+  const previousEnv = env;
+  const sent = [];
+  env = {};
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const key = (init.headers ?? {})['x-api-key'] ?? JSON.parse(init.body ?? '{}').api_key;
+    sent.push({ url, key });
+    if (url.includes('api.exa.ai')) {
+      if (key !== 'exa-good') return new Response('{"error":"rate limited"}', { status: 429 });
+      return new Response(JSON.stringify(EXA_PAYLOAD), { headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('{}', { status: 404 });
+  };
+
+  check(
+    'candidates run the bare name first, then the numbered spares in order',
+    keyCandidates({ EXA_API_KEY: 'a', EXA_API_KEY_2: 'c', EXA_API_KEY_1: 'b' }, 'EXA_API_KEY').join(',') === 'a,b,c',
+    keyCandidates({ EXA_API_KEY: 'a', EXA_API_KEY_2: 'c', EXA_API_KEY_1: 'b' }, 'EXA_API_KEY').join(','),
+  );
+  check('an identical value is not tried twice', keyCandidates({ EXA_API_KEY: 'a', EXA_API_KEY_1: 'a' }, 'EXA_API_KEY').join(',') === 'a');
+  check('another provider is not drafted in', keyCandidates({ EXA_API_KEY: 'a', TAVILY_API_KEY: 't' }, 'EXA_API_KEY').join(',') === 'a');
+
+  const rotated = await ENGINES.exa.search('graph neural network survey', 6, { EXA_API_KEY: 'exa-revoked', EXA_API_KEY_1: 'exa-good' });
+  check('the engine rotates past a refused key', rotated.length > 0, `${rotated.length} results`);
+  check('the refused key was tried first, then the spare', sent.map((row) => row.key).join(',') === 'exa-revoked,exa-good', sent.map((row) => row.key).join(','));
+
+  let thrown = '';
+  try {
+    await ENGINES.exa.search('q', 5, { EXA_API_KEY: 'exa-revoked', EXA_API_KEY_1: 'exa-revoked-2' });
+  } catch (err) {
+    thrown = String(err.message ?? err);
+  }
+  check('every key refused is still an error', /exa http 429/.test(thrown), thrown);
+
+  const attempts = [];
+  const result = await withKeyRotation(['a', 'b'], async (key) => {
+    attempts.push(key);
+    if (key === 'a') throw new Error('nope');
+    return `ok:${key}`;
+  });
+  check('rotation returns the first key that answers', result === 'ok:b' && attempts.join(',') === 'a,b', result);
+
+  let empty = '';
+  try {
+    await withKeyRotation([], async () => 'never');
+  } catch (err) {
+    empty = String(err.message ?? err);
+  }
+  check('no key at all is a named failure', empty === 'no key available', empty);
+
+  globalThis.fetch = previousFetch;
+  env = previousEnv;
 }
 
 const failed = results.filter((r) => !r.ok);

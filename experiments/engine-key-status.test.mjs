@@ -36,6 +36,16 @@ const stateOf = (engine, keys, issues = []) => engineKeyStatus(engine, keys, iss
   check('ready shows the key as the account\'s own', status?.text === 'your key', status?.text);
 }
 
+// 2b. a spare key is the same provider's key: a numbered name alone still counts as ready, and
+// having two is worth saying because the function rotates rather than picking one
+{
+  check('a numbered key still makes the engine ready', engineKeyStatus('exa', stored('EXA_API_KEY_2'))?.state === 'ready');
+  const two = engineKeyStatus('exa', stored('EXA_API_KEY', 'EXA_API_KEY_1'));
+  check('two keys are reported as a rotation', /2 keys, tried in order/.test(two?.detail ?? ''), two?.detail);
+  const one = engineKeyStatus('exa', stored('EXA_API_KEY'));
+  check('a single key says nothing about rotation', one?.detail === 'Using your EXA_API_KEY.', one?.detail);
+}
+
 // 3. Google needs both names, so half of them is not enough
 {
   const status = stateOf('google', stored('GOOGLE_API_KEY'));

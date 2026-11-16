@@ -37,6 +37,51 @@ type EngineKeys = Record<string, string>;
 
 const secret = (keys: EngineKeys | undefined, name: string): string => keys?.[name] ?? Deno.env.get(name) ?? '';
 
+/**
+ * Every key this request may use for one provider, in the order to try them: the bare name first,
+ * then `NAME_1`, `NAME_2`, … as the account numbered them. A second key is a spare, not a
+ * replacement, so an engine rotates through them when one is refused or rate limited.
+ */
+export function keyCandidates(keys: EngineKeys | undefined, name: string): string[] {
+  const candidates: string[] = [];
+  const add = (value: string | undefined) => {
+    const trimmed = String(value ?? '').trim();
+    if (trimmed && !candidates.includes(trimmed)) candidates.push(trimmed);
+  };
+  add(keys?.[name] ?? Deno.env.get(name));
+  Object.entries(keys ?? {})
+    .map(([key, value]) => ({
+      value,
+      index: key.startsWith(`${name}_`) && /^\d{1,3}$/.test(key.slice(name.length + 1))
+        ? Number(key.slice(name.length + 1))
+        : 0,
+    }))
+    .filter((row) => row.index > 0)
+    .sort((a, b) => a.index - b.index)
+    .forEach((row) => add(row.value));
+  return candidates;
+}
+
+/** Whether this request has any key for a provider, numbered or bare. */
+const hasKey = (keys: EngineKeys | undefined, name: string): boolean => keyCandidates(keys, name).length > 0;
+
+/**
+ * Try each key in turn until one answers. The last error is the one reported, because it is what
+ * decided the outcome: a provider that refuses the first key and accepts the second is a rotation,
+ * and an engine only fails when every key it had was refused.
+ */
+export async function withKeyRotation<T>(candidates: string[], attempt: (key: string) => Promise<T>): Promise<T> {
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      return await attempt(candidate);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError ?? new Error('no key available');
+}
+
 interface SearchEngine {
   name: string;
   capabilities: string[];
@@ -223,21 +268,23 @@ const exaEngine: SearchEngine = {
   name: 'exa',
   capabilities: ['general', 'semantic', 'web', 'research'],
   async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
-    const key = secret(keys, 'EXA_API_KEY');
-    if (!key) throw new Error('EXA_API_KEY is not set');
+    const candidates = keyCandidates(keys, 'EXA_API_KEY');
+    if (candidates.length === 0) throw new Error('EXA_API_KEY is not set');
     const wanted = Math.min(25, Math.max(5, maxResults));
-    const resp = await fetch('https://api.exa.ai/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key },
-      body: JSON.stringify({
-        query,
-        numResults: wanted,
-        type: 'auto',
-        contents: { text: { maxCharacters: 500 } },
-      }),
+    return withKeyRotation(candidates, async (key) => {
+      const resp = await fetch('https://api.exa.ai/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+        body: JSON.stringify({
+          query,
+          numResults: wanted,
+          type: 'auto',
+          contents: { text: { maxCharacters: 500 } },
+        }),
+      });
+      if (!resp.ok) throw new Error(`exa http ${resp.status}`);
+      return mapExaResults(await resp.json(), wanted);
     });
-    if (!resp.ok) throw new Error(`exa http ${resp.status}`);
-    return mapExaResults(await resp.json(), wanted);
   },
 };
 
@@ -273,16 +320,18 @@ const tavilyEngine: SearchEngine = {
   name: 'tavily',
   capabilities: ['general', 'research', 'scrape'],
   async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
-    const key = secret(keys, 'TAVILY_API_KEY');
-    if (!key) throw new Error('TAVILY_API_KEY is not set');
+    const candidates = keyCandidates(keys, 'TAVILY_API_KEY');
+    if (candidates.length === 0) throw new Error('TAVILY_API_KEY is not set');
     const wanted = Math.min(20, maxResults);
-    const resp = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: key, query, max_results: wanted, search_depth: 'advanced' }),
+    return withKeyRotation(candidates, async (key) => {
+      const resp = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key, query, max_results: wanted, search_depth: 'advanced' }),
+      });
+      if (!resp.ok) throw new Error(`tavily http ${resp.status}`);
+      return mapTavilyResults(await resp.json(), wanted);
     });
-    if (!resp.ok) throw new Error(`tavily http ${resp.status}`);
-    return mapTavilyResults(await resp.json(), wanted);
   },
 };
 
@@ -290,23 +339,25 @@ const firecrawlEngine: SearchEngine = {
   name: 'firecrawl',
   capabilities: ['general', 'scrape', 'crawl'],
   async search(query: string, maxResults: number, keys?: EngineKeys): Promise<SearchResult[]> {
-    const key = secret(keys, 'FIRECRAWL_API_KEY');
-    if (!key) return [];
+    const candidates = keyCandidates(keys, 'FIRECRAWL_API_KEY');
+    if (candidates.length === 0) return [];
     try {
-      const resp = await fetch('https://api.firecrawl.dev/v1/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ query, limit: Math.min(10, maxResults) }),
+      return await withKeyRotation(candidates, async (key) => {
+        const resp = await fetch('https://api.firecrawl.dev/v1/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({ query, limit: Math.min(10, maxResults) }),
+        });
+        if (!resp.ok) throw new Error(`firecrawl http ${resp.status}`);
+        const data = await resp.json();
+        const items = data?.data ?? data?.results ?? [];
+        return items.map((item: Record<string, string>) => ({
+          title: item.title ?? item.url,
+          url: item.url,
+          snippet: (item.description ?? item.markdown ?? '').slice(0, 320),
+          source_engine: 'firecrawl',
+        }));
       });
-      if (!resp.ok) return [];
-      const data = await resp.json();
-      const items = data?.data ?? data?.results ?? [];
-      return items.map((item: Record<string, string>) => ({
-        title: item.title ?? item.url,
-        url: item.url,
-        snippet: (item.description ?? item.markdown ?? '').slice(0, 320),
-        source_engine: 'firecrawl',
-      }));
     } catch { return []; }
   },
 };
@@ -494,7 +545,7 @@ export async function searchWithKeyFallback(
   }
 }
 
-const ENGINES: Record<string, SearchEngine> = {
+export const ENGINES: Record<string, SearchEngine> = {
   duckduckgo: duckDuckGoEngine,
   wikipedia: wikipediaEngine,
   arxiv: arxivEngine,
@@ -794,7 +845,7 @@ export async function handleRequest(req: Request): Promise<Response> {
       }
 
       const required = ENGINE_KEY_ENV[engineName];
-      const missing = required?.find((name) => !secret(userKeys, name));
+      const missing = required?.find((name) => !hasKey(userKeys, name));
       if (missing) {
         note(engineName, 'missing_key', 0, `${missing} is not set for this account`);
         continue;

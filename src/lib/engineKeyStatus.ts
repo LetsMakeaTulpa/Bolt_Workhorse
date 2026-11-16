@@ -1,5 +1,5 @@
 import { ENGINE_CATALOG, type EngineIssue } from './engines';
-import { KEYS_FOR_ENGINE } from './providerKeys';
+import { KEYS_FOR_ENGINE, providerKeyNames } from './providerKeys';
 
 /**
  * Whether a search engine is actually usable before a search is run.
@@ -50,8 +50,12 @@ export function engineKeyStatus(
   if (!def) return null;
 
   const required = KEYS_FOR_ENGINE[engineId] ?? [];
-  const kept = required.filter((name) => stored.has(name));
-  const missing = required.filter((name) => !stored.has(name));
+  // a numbered name is the same provider's key, so `EXA_API_KEY_2` alone still means this engine
+  // has a key — it is the spare the function rotates to when the first is refused
+  const family = (name: string) => providerKeyNames(stored, name);
+  const kept = required.filter((name) => family(name).length > 0);
+  const missing = required.filter((name) => family(name).length === 0);
+  const rotations = required.reduce((sum, name) => sum + family(name).length, 0);
   const failedKey = issues.some((issue) => issue.engine === engineId && issue.status === 'missing_key');
   const rejectedKey = issues.some((issue) => issue.engine === engineId && issue.status === 'key_fallback');
   const base = { engine: engineId, label: def.label, required, stored: kept };
@@ -76,7 +80,12 @@ export function engineKeyStatus(
         detail: `Your ${required.join(' + ')} is saved, but the function still reports a missing key. It may not be redeployed since the key was stored.`,
       };
     }
-    return { ...base, state: 'ready', text: 'your key', detail: `Using your ${required.join(' + ')}.` };
+    return {
+      ...base,
+      state: 'ready',
+      text: 'your key',
+      detail: `Using your ${required.join(' + ')}${rotations > required.length ? ` (${rotations} keys, tried in order)` : ''}.`,
+    };
   }
   // the deployment's own secrets are a fact now, not a guess: nothing personal stored still means
   // the engine answers

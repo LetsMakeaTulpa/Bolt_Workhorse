@@ -70,7 +70,7 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
   }, [userId]);
 
   const handleSaveKeys = async () => {
-    const { keys, rejected, invalid, aliased } = parseProviderKeys(keyText);
+    const { keys, rejected, invalid } = parseProviderKeys(keyText);
     if (!userId) {
       setKeyMessage({ tone: 'error', text: 'Sign in before adding provider keys.' });
       return;
@@ -101,10 +101,7 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
 
     setKeyText('');
     await loadStoredKeys();
-    const note = [
-      aliased.length ? `saved ${aliased.map((alias) => `${alias.from} as ${alias.to}`).join(', ')}` : '',
-      rejected.length ? `skipped ${rejected.join(', ')}` : '',
-    ].filter(Boolean).join(' · ');
+    const note = [rejected.length ? `skipped ${rejected.join(', ')}` : ''].filter(Boolean).join(' · ');
     setKeyMessage({ tone: 'ok', text: `Saved ${describeKeys(keys)}${note ? ` (${note})` : ''}` });
   };
 
@@ -186,11 +183,13 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
               <p className="mb-2 text-[11px] text-text-muted">
                 Paste any of these, one per line, and they are stored against your account — no terminal, no
                 deploy per key. Your keys are used before the deployment's own, and only for your searches.
+                A second key for the same provider is a spare: name it with a number (<span className="font-mono">EXA_API_KEY_1</span>)
+                and the search tries each in turn instead of the new one replacing the old.
               </p>
               <textarea
                 value={keyText}
                 onChange={(event) => setKeyText(event.target.value)}
-                placeholder={'EXA_API_KEY=…\nTAVILY_API_KEY=…\nGOOGLE_API_KEY=…\nGOOGLE_CSE_ID=…'}
+                placeholder={'EXA_API_KEY=…\nEXA_API_KEY_1=…  (a spare)\nTAVILY_API_KEY=…\nGOOGLE_API_KEY=…\nGOOGLE_CSE_ID=…'}
                 spellCheck={false}
                 rows={3}
                 className="w-full resize-y rounded-lg border border-border-subtle bg-bg-base px-2.5 py-2 font-mono text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent/40"

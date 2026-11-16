@@ -53,17 +53,19 @@ export interface ParseResult {
   rejected: string[];
   /** lines that were structurally wrong (no value, too short, bad URL) */
   invalid: string[];
-  /** numbered names that were accepted under their documented name, e.g. EXA_API_KEY_1 → EXA_API_KEY */
-  aliased: { from: string; to: string }[];
 }
 
-/** People number their keys (`EXA_API_KEY_1`, `TAVILY_API_KEY_2`); the function reads the base name. */
+/**
+ * People number their keys (`EXA_API_KEY_1`, `TAVILY_API_KEY_2`) when they have several. The number
+ * is part of the stored name, not an alias for it: a second Exa key is a spare the function rotates
+ * to, so folding it onto the base name would overwrite the first one.
+ */
 const NUMBERED = /^(.+)_(\d{1,3})$/;
 
 /**
- * The secret a pasted name refers to, and the name it will be stored under.
+ * The secret definition a pasted name belongs to, and the name it is stored under — always as typed.
  *
- * Numbering is only stripped when the base is a real secret, so `EXA_KEY_1` is still reported as
+ * Numbering is only understood when the base is a real secret, so `EXA_KEY_1` is still reported as
  * unreadable instead of being guessed at — the same rule as any other unknown name.
  */
 function resolveName(name: string): { name: string; def: ProviderKeyDef } | null {
@@ -72,7 +74,30 @@ function resolveName(name: string): { name: string; def: ProviderKeyDef } | null
   const numbered = name.match(NUMBERED);
   if (!numbered) return null;
   const base = BY_NAME.get(numbered[1]);
-  return base ? { name: numbered[1], def: base } : null;
+  return base ? { name, def: base } : null;
+}
+
+/**
+ * Where a stored name sits in one provider's rotation: 0 for the bare name, N for `NAME_N`, null for
+ * a name belonging to something else. Shared with the status chips, so "my key is saved" and "my key
+ * is used" agree about numbered keys.
+ */
+export function providerKeyIndex(name: string, base: string): number | null {
+  if (name === base) return 0;
+  if (!name.startsWith(`${base}_`)) return null;
+  const rest = name.slice(base.length + 1);
+  if (!/^\d{1,3}$/.test(rest)) return null;
+  const index = Number(rest);
+  return index > 0 ? index : null;
+}
+
+/** Every stored name for one provider, in the order the function tries them. */
+export function providerKeyNames(stored: Iterable<string>, base: string): string[] {
+  return [...stored]
+    .map((name) => ({ name, index: providerKeyIndex(name, base) }))
+    .filter((row): row is { name: string; index: number } => row.index !== null)
+    .sort((a, b) => a.index - b.index)
+    .map((row) => row.name);
 }
 
 const LINE = /^(?:export\s+)?([A-Za-z][A-Za-z0-9_]{2,63})\s*[=:]\s*(.+)$/;
@@ -81,7 +106,6 @@ export function parseProviderKeys(input: string): ParseResult {
   const keys: ParsedKey[] = [];
   const rejected: string[] = [];
   const invalid: string[] = [];
-  const aliased: { from: string; to: string }[] = [];
   const seen = new Set<string>();
 
   for (const raw of input.split(/\r?\n/)) {
@@ -110,14 +134,14 @@ export function parseProviderKeys(input: string): ParseResult {
       invalid.push(typedName);
       continue;
     }
-    // two numbered variants of one secret are one row: the first wins, as with an exact duplicate
+    // the same name twice in one paste is one row: the first wins. Two *numbered* names are two
+    // rows, because that is how a spare key is kept instead of replacing the first
     if (seen.has(resolved.name)) continue;
     seen.add(resolved.name);
-    if (resolved.name !== typedName) aliased.push({ from: typedName, to: resolved.name });
     keys.push({ name: resolved.name, value });
   }
 
-  return { keys, rejected, invalid, aliased };
+  return { keys, rejected, invalid };
 }
 
 /** Human summary of what a paste will do, e.g. "Exa, Tavily". */

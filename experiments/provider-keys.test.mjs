@@ -11,7 +11,9 @@ execFileSync(
   [ESBUILD, 'src/lib/providerKeys.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'],
   { stdio: 'inherit' },
 );
-const { parseProviderKeys, describeKeys, PROVIDER_KEYS } = await import(`${pathToFileURL(OUT).href}?t=${Date.now()}`);
+const { parseProviderKeys, describeKeys, providerKeyIndex, providerKeyNames, PROVIDER_KEYS } = await import(
+  `${pathToFileURL(OUT).href}?t=${Date.now()}`,
+);
 
 let passed = 0;
 const failures = [];
@@ -54,20 +56,27 @@ check('reports a line with no separator', structural.invalid.length === 1 && str
 const empty = parseProviderKeys('   \n\n');
 check('returns nothing for an empty paste', empty.keys.length === 0 && empty.invalid.length === 0 && empty.rejected.length === 0);
 
-// numbered names: people label their keys, and the function only reads the documented name
+// numbered names: a second key for one provider is a spare, so the number stays in the stored name
+// — folding it onto the base name is what used to overwrite the first key
 const numbered = parseProviderKeys('EXA_API_KEY_1=exa-1234567890');
 check('a numbered name is accepted', numbered.keys.length === 1 && numbered.rejected.length === 0, JSON.stringify(numbered));
-check('and stored under the documented name', numbered.keys[0]?.name === 'EXA_API_KEY', numbered.keys[0]?.name);
-check('and the mapping is reported back', numbered.aliased[0]?.from === 'EXA_API_KEY_1' && numbered.aliased[0]?.to === 'EXA_API_KEY', JSON.stringify(numbered.aliased));
+check('and stored as typed, not folded onto the base name', numbered.keys[0]?.name === 'EXA_API_KEY_1', numbered.keys[0]?.name);
+
+const both = parseProviderKeys('EXA_API_KEY=first-1234567\nEXA_API_KEY_1=second-1234567');
+check('the bare key and its spare are two rows', both.keys.length === 2 && both.keys.map((key) => key.name).join(',') === 'EXA_API_KEY,EXA_API_KEY_1', JSON.stringify(both.keys));
+check('so the second key does not overwrite the first', both.keys.find((key) => key.name === 'EXA_API_KEY')?.value === 'first-1234567');
 
 const numberedLower = parseProviderKeys('exa_api_key_2=exa-1234567890');
-check('numbering works in lower case', numberedLower.keys[0]?.name === 'EXA_API_KEY' && numberedLower.aliased.length === 1);
+check('numbering works in lower case', numberedLower.keys[0]?.name === 'EXA_API_KEY_2');
 
 const numberedDup = parseProviderKeys('EXA_API_KEY_1=first-1234567\nEXA_API_KEY_2=second-1234567');
-check('two variants of one secret save one row, first wins', numberedDup.keys.length === 1 && numberedDup.keys[0].value === 'first-1234567', JSON.stringify(numberedDup.keys));
+check('two numbered keys save two rows', numberedDup.keys.length === 2 && numberedDup.keys[1].value === 'second-1234567', JSON.stringify(numberedDup.keys));
+
+const sameTwice = parseProviderKeys('EXA_API_KEY_1=first-1234567\nEXA_API_KEY_1=second-1234567');
+check('the same numbered name twice is one row, first wins', sameTwice.keys.length === 1 && sameTwice.keys[0].value === 'first-1234567');
 
 const numberedUrl = parseProviderKeys('SEARXNG_URL_1=https://searx.example');
-check('a numbered URL secret keeps URL validation', numberedUrl.keys[0]?.name === 'SEARXNG_URL' && numberedUrl.invalid.length === 0, JSON.stringify(numberedUrl));
+check('a numbered URL secret keeps URL validation', numberedUrl.keys[0]?.name === 'SEARXNG_URL_1' && numberedUrl.invalid.length === 0, JSON.stringify(numberedUrl));
 
 const numberedBadUrl = parseProviderKeys('SEARXNG_URL_2=not-a-url.example');
 check('a bad numbered URL is reported as typed', numberedBadUrl.invalid[0] === 'SEARXNG_URL_2', JSON.stringify(numberedBadUrl.invalid));
@@ -80,8 +89,9 @@ const numberedUnknownBase = parseProviderKeys('EXA_KEY_1=exa-1234567890');
 check('an unknown base is still rejected', numberedUnknownBase.keys.length === 0 && numberedUnknownBase.rejected[0] === 'EXA_KEY_1', JSON.stringify(numberedUnknownBase));
 const numberedWord = parseProviderKeys('EXA_API_KEY_TWO=exa-1234567890');
 check('a non-numeric suffix is not stripped', numberedWord.keys.length === 0 && numberedWord.rejected[0] === 'EXA_API_KEY_TWO', JSON.stringify(numberedWord));
-const unnumbered = parseProviderKeys('EXA_API_KEY=exa-1234567890');
-check('an exact name records no alias', unnumbered.aliased.length === 0);
+check('rotation order puts the bare name first, then the numbered spares', providerKeyNames(new Set(['EXA_API_KEY_2', 'EXA_API_KEY', 'EXA_API_KEY_1', 'TAVILY_API_KEY']), 'EXA_API_KEY').join(',') === 'EXA_API_KEY,EXA_API_KEY_1,EXA_API_KEY_2');
+check('a name from another provider is not in the family', providerKeyIndex('TAVILY_API_KEY', 'EXA_API_KEY') === null);
+check('a trailing word is not a rotation slot', providerKeyIndex('EXA_API_KEY_ONE', 'EXA_API_KEY') === null);
 
 check('describes a paste by provider label', describeKeys([{ name: 'EXA_API_KEY', value: 'x' }]) === 'Exa');
 check('catalogues Google as two secrets', PROVIDER_KEYS.filter((key) => key.engine === 'google').length === 2);

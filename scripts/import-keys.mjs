@@ -8,7 +8,7 @@
 //
 //   npm run keys:import              # classify, write .env.functions, send nothing
 //   npm run keys:apply               # + push to Supabase and redeploy web-search
-//   node scripts/import-keys.mjs other.txt --out-dir /tmp
+//   node scripts/import-keys.mjs other.txt --out-dir ./tmp-keys
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';

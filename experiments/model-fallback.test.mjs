@@ -1,8 +1,7 @@
 import { asUrl, bundle, installWebSocketStub, tmpPath } from './lib/build.mjs';
 // Drives the real api.ts fallback logic against a stubbed llm-proxy.
-// Run: npx esbuild src/lib/api.ts --bundle --format=esm --outfile=/tmp/api.mjs \
-//        --define:import.meta.env.VITE_SUPABASE_URL='"https://proxy.test"' \
-//        --define:import.meta.env.VITE_SUPABASE_ANON_KEY='"anon"' && node experiments/model-fallback.test.mjs
+// Run: node experiments/model-fallback.test.mjs — it builds api.ts into the OS temp directory with
+// the esbuild that ships with vite, so no npx and no /tmp
 
 // minimal localStorage so reliability persistence can be exercised outside a browser
 const store = new Map();

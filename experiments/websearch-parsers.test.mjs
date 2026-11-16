@@ -1,6 +1,6 @@
 // Fixture tests for the web-search response mappers.
-// Run: npx esbuild supabase/functions/web-search/parsers.ts --bundle --format=esm \
-//        --outfile=/tmp/parsers.mjs && node experiments/websearch-parsers.test.mjs
+// Run: bash scripts/smoke.sh, which bundles supabase/functions/web-search/parsers.ts and sets
+// PARSERS_MODULE to it
 import { asUrl, tmpPath, ESBUILD } from './lib/build.mjs';
 import assert from 'node:assert/strict';
 

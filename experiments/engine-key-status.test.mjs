@@ -1,6 +1,6 @@
 // Whether the composer can tell an engine is unusable before it runs.
-// Run: npx esbuild src/lib/engineKeyStatus.ts --bundle --format=esm --outfile=/tmp/engine-key-status.mjs \
-//        && node experiments/engine-key-status.test.mjs
+// Run: bash scripts/smoke.sh, which bundles both modules inside the project (so their external
+// `react` resolves) and sets KEYSTATUS_MODULE and KEYROW_MODULE to them
 import { tmpPath } from './lib/build.mjs';
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';

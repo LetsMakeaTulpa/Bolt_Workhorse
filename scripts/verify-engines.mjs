@@ -9,7 +9,7 @@
 // script never sees or prints them. Exit codes: 0 verified, 1 failed, 2 not configured.
 
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { asUrl, bundle, tmpPath } from '../experiments/lib/build.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -30,8 +30,11 @@ function loadEnv() {
     console.error('No .env found. Copy .env.example and set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY.');
     process.exit(2);
   }
-  for (const line of text.split('\n')) {
-    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+  // Split on CRLF as well as LF: `.` does not match `\r`, so `(.*)$` never matches a CRLF line and
+  // every key in a Windows-written .env would read as missing. A byte-order mark gets the same
+  // treatment, or the first name carries it and stops matching.
+  for (const line of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    const match = line.match(/^(?:export\s+)?([A-Z0-9_]+)\s*=(.*)$/);
     if (match) env[match[1]] = match[2].trim().replace(/^["']|["']$/g, '');
   }
   const url = env.VITE_SUPABASE_URL;
@@ -113,13 +116,11 @@ for (const outcome of outcomes) {
 
 // ── the fusion layer: real engine payloads in, ranked sources out ──────────────
 const fusion = (() => {
-  const mod = '/tmp/fieldwork-fusion.mjs';
-  execFileSync(
-    'npx',
-    ['--yes', 'esbuild', 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${mod}`, '--log-level=error'],
-    { stdio: 'inherit' },
-  );
-  return import(`${mod}?t=${Date.now()}`);
+  // the same portable build the experiment suites use: os.tmpdir() rather than /tmp, and the esbuild
+  // that ships with vite run under node rather than `npx`, which cmd.exe cannot spawn
+  const mod = tmpPath('fieldwork-fusion.mjs');
+  bundle('src/lib/fusion.ts', mod);
+  return import(`${asUrl(mod)}?t=${Date.now()}`);
 })();
 
 if (!undiagnosed && outcomes.some((o) => o.results.length > 0 && o.status !== 'missing_key')) {

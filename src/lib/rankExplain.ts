@@ -42,6 +42,27 @@ export function summaryForQuery(query: string, now = Date.now()): IntentSummary 
   return describeIntent(queryIntent(query, now));
 }
 
+/**
+ * The Sources panel's order: the fusion score, highest first.
+ *
+ * A result with no score sinks below every scored one rather than being treated as zero — RRF
+ * scores are tiny (0.03 is a good hit), so "absent" and "0.0" are different claims. Equal scores
+ * keep the order fusion returned, and the rank is assigned after sorting, so #1 is always the row at
+ * the top of the list and the badges on it explain why it is there.
+ */
+export function rankSources<T extends { relevance_score?: number }>(sources: T[]): (T & { rank: number })[] {
+  return sources
+    .map((source, index) => ({
+      source,
+      index,
+      score: typeof source.relevance_score === 'number' && Number.isFinite(source.relevance_score)
+        ? source.relevance_score
+        : -Infinity,
+    }))
+    .sort((a, b) => (a.score === b.score ? a.index - b.index : b.score - a.score))
+    .map((row, position) => ({ ...row.source, rank: position + 1 }));
+}
+
 export type RecencyTier = 'fresh' | 'recent' | 'aging' | 'old' | 'undated' | 'ignored';
 
 export interface RecencyBadge {

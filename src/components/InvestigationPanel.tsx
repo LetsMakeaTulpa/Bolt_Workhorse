@@ -1,7 +1,8 @@
 import { Source, Finding, ActivityLog, SourceRecord } from '../types';
 import { queryIntent } from '../lib/fusion';
-import { describeIntent, intentBadge, recencyBadge } from '../lib/rankExplain';
-import { Search, ExternalLink, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar, Clock, Sparkles } from 'lucide-react';
+import { describeIntent, rankSources } from '../lib/rankExplain';
+import { SourceCard, type CardSource } from './SourceCard';
+import { Search, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar } from 'lucide-react';
 import { SearchMap } from './SearchMap';
 import type { LucideIcon } from 'lucide-react';
 import { useState } from 'react';
@@ -129,18 +130,6 @@ function ActivityTab({ logs, isSearching }: { logs: ActivityLog[]; isSearching: 
   );
 }
 
-interface CardSource {
-  title: string;
-  url: string;
-  snippet: string;
-  source_engine: string;
-  citation_id?: string;
-  relevance_score?: number;
-  published?: string;
-  /** the query this source answered, kept per row so a reloaded list still explains itself */
-  query?: string;
-}
-
 function SourcesTab({
   results,
   sources,
@@ -184,13 +173,9 @@ function SourcesTab({
     );
   }
 
-  // Group by provider
-  const grouped: Record<string, typeof displaySources> = {};
-  for (const s of displaySources) {
-    const engine = s.source_engine;
-    if (!grouped[engine]) grouped[engine] = [];
-    grouped[engine].push(s);
-  }
+  // One order instead of a section per provider: a rank is only worth showing if it matches where
+  // the row sits, and grouping by engine would put a lower-scored source above a higher one.
+  const ranked = rankSources(displaySources);
 
   const intent = describeIntent(queryIntent(query || displaySources[0]?.query || ''));
 
@@ -204,20 +189,11 @@ function SourcesTab({
         <p className="mt-0.5 text-[9px] leading-tight text-text-muted">{intent.detail}</p>
       </div>
       <EngineSummary results={displaySources} />
-      {Object.entries(grouped).map(([engine, items]) => (
-        <div key={engine}>
-          <div className="mb-1.5 flex items-center gap-1.5">
-            <Globe size={10} className="text-olive" />
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">{engine.split('+').join(' + ')}</span>
-            <span className="text-[10px] text-text-muted">({items.length})</span>
-          </div>
-          <div className="space-y-1.5">
-            {items.map((r, i) => (
-              <SourceCard key={`${engine}-${i}`} source={r} />
-            ))}
-          </div>
-        </div>
-      ))}
+      <div className="space-y-1.5">
+        {ranked.map((source) => (
+          <SourceCard key={`${source.rank}-${source.url}`} source={source} rank={source.rank} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -275,71 +251,6 @@ function EngineSummary({ results }: { results: { source_engine: string }[] }) {
         {merged > 0 && ` · ${merged} confirmed by more than one engine`}
       </div>
     </div>
-  );
-}
-
-function SourceCard({ source }: { source: CardSource }) {
-  const url = source.url;
-  const title = source.title;
-  const snippet = source.snippet;
-  const citationId = source.citation_id ?? '';
-  const score = source.relevance_score;
-  const intent = queryIntent(source.query ?? '');
-  const recency = recencyBadge(source.published, intent);
-  const routing = intentBadge(source.source_engine, source.query ?? '');
-
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="block rounded-lg border border-border-subtle bg-bg-surface p-2.5 transition-all hover:border-accent/25 hover:bg-bg-elevated group"
-    >
-      <div className="flex items-start justify-between gap-1.5">
-        <div className="flex items-start gap-1.5 flex-1 min-w-0">
-          {citationId && <span className="flex-shrink-0 text-[10px] font-mono text-accent mt-0.5">{citationId}</span>}
-          <h4 className="text-[11px] font-medium text-text-primary line-clamp-2 flex-1">{title}</h4>
-        </div>
-        <ExternalLink size={10} className="flex-shrink-0 text-text-muted opacity-0 group-hover:opacity-100 mt-0.5" />
-      </div>
-      <p className="mt-1 text-[10px] text-text-muted line-clamp-2">{snippet}</p>
-      <div className="mt-1 truncate text-[10px] text-accent/70">{url}</div>
-      <div className="mt-1 flex flex-wrap items-center gap-1 text-[9px]">
-        {score !== undefined && score > 0 && (
-          <span className="font-mono text-text-muted" title="Reciprocal-rank-fusion score for this source">
-            RRF {score.toFixed(4)}
-          </span>
-        )}
-        <span
-          title={recency.detail}
-          className={`flex items-center gap-0.5 rounded border px-1 py-0.5 font-mono ${
-            recency.tier === 'fresh'
-              ? 'border-olive/30 bg-olive-subtle text-olive'
-              : 'border-border-subtle text-text-muted'
-          }`}
-        >
-          <Clock size={8} />
-          {recency.tier === 'undated'
-            ? 'no date'
-            : `${recency.published!.slice(0, 10)} ${recency.tier === 'ignored' ? 'ignored' : `×${recency.multiplier.toFixed(2)}`}`}
-        </span>
-        {routing && (
-          <span
-            title={routing.detail}
-            className={`flex items-center gap-0.5 rounded border px-1 py-0.5 ${
-              routing.delta > 0.001
-                ? 'border-accent/30 bg-accent-subtle text-accent'
-                : routing.delta < -0.001
-                  ? 'border-warning/30 bg-warning-subtle text-warning'
-                  : 'border-border-subtle text-text-muted'
-            }`}
-          >
-            <Sparkles size={8} />
-            {routing.intent} · {routing.engine} ×{routing.weight.toFixed(2)}
-          </span>
-        )}
-      </div>
-    </a>
   );
 }
 

@@ -15,7 +15,7 @@ const build = (entry, out) =>
 build('src/lib/rankExplain.ts', OUT);
 build('src/lib/fusion.ts', FUSION);
 
-const { summaryForQuery, freshnessBonus, recencyBadge, intentBadge } = await import(
+const { summaryForQuery, freshnessBonus, recencyBadge, intentBadge, rankSources } = await import(
   `${pathToFileURL(OUT).href}?t=${Date.now()}`
 );
 const { engineWeights, queryIntent } = await import(`${pathToFileURL(FUSION).href}?t=${Date.now()}`);
@@ -113,6 +113,28 @@ check('timeless intent raises Wikipedia', wikipediaEvergreen.delta > 0 && wikipe
 check('a merged engine badges its primary', intentBadge('exa+tavily', SEMANTIC, NOW).engine === 'exa');
 check('an unknown engine has no badge', intentBadge('nope', 'q', NOW) === null);
 check('a missing engine has no badge', intentBadge('', 'q', NOW) === null);
+
+// 9. the panel's order. The rank on a card is only worth showing if it matches the row the reader
+// sees, so the sort and the number have to come from one place.
+{
+  const rows = [
+    { id: 'b', relevance_score: 0.011 },
+    { id: 'a', relevance_score: 0.041 },
+    { id: 'c', relevance_score: 0.041 },
+    { id: 'no-score' },
+    { id: 'zero', relevance_score: 0 },
+  ];
+  const rankedRows = rankSources(rows);
+
+  check('sources are ordered by fusion score, highest first', rankedRows.slice(0, 3).map((row) => row.id).join(',') === 'a,c,b', rankedRows.map((row) => row.id).join(','));
+  check('equal scores keep the order fusion returned', rankedRows[0].id === 'a' && rankedRows[1].id === 'c', rankedRows.map((row) => row.id).join(','));
+  check('ranks count from one down the list', rankedRows.map((row) => row.rank).join(',') === '1,2,3,4,5', rankedRows.map((row) => row.rank).join(','));
+  check('a real zero outranks a missing score', rankedRows.find((row) => row.id === 'zero').rank < rankedRows.find((row) => row.id === 'no-score').rank);
+  check('a missing score sinks below every scored row', rankedRows[rankedRows.length - 1].id === 'no-score');
+  check('sorting leaves the input order alone', rows.map((row) => row.id).join(',') === 'b,a,c,no-score,zero', rows.map((row) => row.id).join(','));
+  check('each row keeps its own fields', rankedRows[0].id === 'a' && rankedRows[0].relevance_score === 0.041);
+  check('an empty list ranks to nothing', rankSources([]).length === 0);
+}
 
 console.log(`\n${passed}/${passed + failures.length} assertions passed`);
 if (failures.length > 0) process.exit(1);

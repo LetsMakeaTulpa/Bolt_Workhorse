@@ -140,6 +140,20 @@ if (existsSync(join('node_modules', 'react-test-renderer'))) {
   }
 }
 
+// ── 4i2. the source card's badge row, against title and date combinations ────
+{
+  const dir = join('node_modules', '.cache', 'fieldwork');
+  mkdirSync(dir, { recursive: true });
+  const card = join(dir, 'source-card.mjs');
+  try {
+    bundle('src/components/SourceCard.tsx', card, ['--jsx=automatic', '--external:react', '--external:react-dom']);
+    nodeTest('source card badges', 'experiments/source-card.test.mjs', { SOURCE_CARD_MODULE: asModulePath(card) });
+  } catch (err) {
+    failed.push('source card badges');
+    console.log(`→ source card badges\n  FAILED\n    ${err.message}`);
+  }
+}
+
 // ── 4j–4n. the answer contract, the empty page, prompts, ranking, searxng ────
 nodeTest('system prompt', 'experiments/system-prompt.test.mjs');
 nodeTest('empty result', 'experiments/empty-result.test.mjs');

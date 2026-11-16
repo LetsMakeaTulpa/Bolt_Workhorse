@@ -27,14 +27,17 @@ npm run smoke -- --live  # + read-only probes against the live Supabase project 
 
 Rules a change has to respect:
 
-- **Green means every check that ran passed, 0 failed** — 21 on a full install (17 that always run,
+- **Green means every check that ran passed, 0 failed** — 23 on a full install (19 that always run,
   plus 4 database checks). The script exits non-zero if anything fails; do not merge on a red run,
   and do not treat a red run as "probably the environment" without reading the log. Failing checks
   print the last 20 lines of their output.
-- **A skip is not a pass.** Four database checks need `@electric-sql/pglite`, which is
-  test-only and deliberately not in `package.json`; the script installs it with
-  `npm install --no-save` when it can, and reports SKIPPED when it cannot. Do not add PGlite to
-  dependencies to make the skip go away, and do not claim a skipped check passed.
+- **A skip is not a pass.** Two test-only packages are deliberately not in `package.json` and are
+  installed with `npm install --no-save` when the network allows: `@electric-sql/pglite` for the
+  four database checks, and `react-test-renderer` for the check that mounts `useSearch`. When one
+  of them cannot be installed the affected checks report SKIPPED. Do not add them to dependencies
+  to make a skip go away, and do not claim a skipped check passed.
+- **The gate is portable.** `npm run smoke` runs on Windows as well as Linux and macOS, so a red
+  run is your change, not the platform.
 - **Never weaken a check to get green.** No skipped assertions, no widened tolerances, no
   `2>/dev/null` around the failing command. If a check is wrong, fix the check in its own commit and
   say why in the message.
@@ -45,10 +48,20 @@ Rules a change has to respect:
 2. Bundle the **real** source and import it, so the test cannot drift from what ships:
 
    ```js
-   execFileSync('npx', ['--yes', 'esbuild', 'src/lib/api.ts', '--bundle', '--format=esm',
-     '--outfile=/tmp/api.mjs', '--log-level=error'], { stdio: 'inherit' });
-   const { chatCompletion } = await import(`/tmp/api.mjs?t=${Date.now()}`);
+   import { asUrl, bundle, tmpPath } from './lib/build.mjs';
+
+   const out = tmpPath('api.mjs'); // os.tmpdir(): absolute, and correct on every platform
+   bundle('src/lib/api.ts', out, [
+     '--define:import.meta.env.VITE_SUPABASE_URL="https://proxy.test"',
+     '--define:import.meta.env.VITE_SUPABASE_ANON_KEY="anon"',
+   ]);
+   const { chatCompletion } = await import(`${asUrl(out)}?t=${Date.now()}`);
    ```
+
+   Two Windows traps this helper exists to avoid: a literal `/tmp` is `C:\tmp` to Node but the OS
+   temp directory to a native binary, and spawning `npx` goes through `cmd.exe`, which strips the
+   quotes out of `--define` and turns the value into invalid JSON. Build with the esbuild that
+   ships with vite, under `node`, and import bundles by `file://` URL (`asUrl`).
 
    Stub the edges, not the logic: `globalThis.fetch` for the proxy, `localStorage` for reliability
    state, `WebSocket` on Node 20 (supabase-js constructs a realtime client at import).
@@ -65,13 +78,22 @@ Rules a change has to respect:
 5. Update the expected total in this document only after the check passes locally.
 
 A component can be asserted on without a browser: bundle it with `--jsx=automatic` and
-`--external:react --external:react-dom` **into `node_modules/.cache/` rather than `/tmp`** (an
-external `react` cannot resolve from the OS temp dir), then render it with `renderToStaticMarkup`
-and assert on the HTML. `experiments/engine-key-status.test.mjs` does this for the composer's key
-row; it proves the wiring and the copy, not the layout.
+`--external:react --external:react-dom` **into the project, e.g. `node_modules/.cache/fieldwork/`,
+not the temp directory** (an external `react` needs a `node_modules` above it to resolve), then
+render it with `renderToStaticMarkup` and assert on the HTML. `experiments/engine-key-status.test.mjs`
+does this for the composer's key row; it proves the wiring and the copy, not the layout. When the
+behaviour unfolds over time — a request that lands after it was replaced — mount the real hook
+instead: `experiments/use-search-supersede.test.mjs` drives `useSearch` with `react-test-renderer`
+and `act`, which needs no DOM at all.
 
 The default run makes no network calls. Anything that needs a live service goes behind `--live` and
 must be read-only.
+
+`npm run engines:verify` is the other end-to-end probe, outside smoke: it calls the deployed
+`web-search` function engine by engine, then runs what came back through the client's own fusion
+layer. Read-only, needs `.env`, and exits 2 when that file has no Supabase URL or key. It is the
+check that catches a deployed function drifting behind the source, because it looks at
+`engine_status` and reports an older deployment as undiagnosed rather than as a pass.
 
 ## Ranking changes
 
@@ -173,12 +195,18 @@ query.
       runtime dependencies at all.
 - [ ] No secrets, key files or local state in the diff.
 
-## Known environment limitation
+## Running the checks on Windows
 
-The checks write bundled modules to `/tmp`. On Linux and macOS that works; on Windows under Git
-Bash, Node resolves `/tmp` to `C:\tmp` while esbuild (a native binary) writes into the OS temp
-directory, so most checks fail with `ERR_MODULE_NOT_FOUND` for reasons unrelated to the code.
-**Run the gate under WSL/Linux.** Only three harnesses currently accept an override —
-`API_MODULE`, `PARSERS_MODULE` and `FUSION_MODULE` — and the rest hardcode `/tmp`; making them
-portable is an open task, not a solved one. Never work around a red run by removing assertions, and
-never report a check as passing when it could not execute.
+They run there. The suites take temp paths from `os.tmpdir()` through `experiments/lib/build.mjs`,
+build with the esbuild that ships with vite under `node` (never `npx`), and import bundles by
+`file://` URL. `scripts/smoke.sh` asks Node where temp actually is and passes absolute paths, and
+one suite renders a component against the project's own `react` from `node_modules/.cache/`.
+
+If you add a check, use the helper rather than a literal `/tmp` and rather than a fresh copy of the
+build commands: that duplication is what left this repository unverifiable on Windows for a while,
+with each suite failing for its own environment reason. A suite that needs a bundle from outside
+still accepts a `*_MODULE` override (`API_MODULE`, `PARSERS_MODULE`, `FUSION_MODULE`, `SEARXNG_MODULE`,
+and so on) and builds its own when none is set.
+
+Never work around a red run by removing assertions, and never report a check as passing when it
+could not execute.

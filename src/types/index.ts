@@ -19,6 +19,11 @@ export interface Message {
   search_enabled: boolean;
   search_results: Source[];
   created_at: string;
+  /**
+   * The exact system prompt sent with this turn, so the answer can be traced to the prompt that
+   * produced it. Null on rows written before it was recorded — unknown, not "built-in".
+   */
+  system_prompt?: string | null;
 }
 
 export interface Source {

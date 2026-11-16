@@ -324,10 +324,12 @@ export default function App() {
     }
 
     // Build LLM messages
+    // the built-in prompt, or the variant this account saved in Settings — kept in hand so the
+    // answer row can record the exact text that produced it
+    const activePrompt = systemPromptFor(session?.user?.id);
     const llmMessages: { role: string; content: string }[] = [{
       role: 'system',
-      // the built-in prompt, or the variant this account saved in Settings
-      content: systemPromptFor(session?.user?.id),
+      content: activePrompt,
     }];
 
     if (searchResultsData.length > 0) {
@@ -396,6 +398,7 @@ export default function App() {
         const { data: savedMsg } = await supabase.from('messages').insert({
           conversation_id: conv!.id, role: 'assistant', content: finalContent,
           model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
+          system_prompt: activePrompt,
         }).select().single();
 
         // Save findings
@@ -440,6 +443,7 @@ export default function App() {
           await supabase.from('messages').insert({
             conversation_id: conv!.id, role: 'assistant', content: stopped,
             model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
+            system_prompt: activePrompt,
           });
           await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv!.id);
         }

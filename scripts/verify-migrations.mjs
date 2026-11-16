@@ -42,6 +42,7 @@ const COLUMNS = [
   ['app_config', 'featherless_api_key'],
   ['messages', 'user_id'],
   ['messages', 'conversation_id'],
+  ['messages', 'system_prompt'],
   ['sources', 'user_id'],
   ['findings', 'user_id'],
   ['activity_logs', 'user_id'],

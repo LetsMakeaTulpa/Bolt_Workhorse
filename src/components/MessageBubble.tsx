@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Message, Source } from '../types';
-import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown } from 'lucide-react';
+import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { splitFollowUps } from '../lib/followUps';
@@ -9,6 +9,8 @@ import type { LedgerClaim } from '../lib/claimLedger';
 import { ClaimLedgerTable } from './ClaimLedgerTable';
 import { broadenQuery, isGapReport } from '../lib/emptyResult';
 import { DORK_LANES } from '../lib/dorks';
+import { FIELDWORK_SYSTEM_PROMPT } from '../lib/systemPrompt';
+import { promptWordCount } from '../lib/promptVariant';
 
 interface MessageBubbleProps {
   message: Message;
@@ -20,6 +22,15 @@ interface MessageBubbleProps {
   onFollowUp?: (question: string) => void;
   /** run one dork lane against a target, offered from a gap report */
   onRunLane?: (lane: string, target: string) => void;
+}
+
+/**
+ * The word count of the custom prompt this answer was produced with, or null when it used the
+ * built-in prompt — or when the row predates the column, which is unknown rather than built-in.
+ */
+function customPromptWords(stored?: string | null): number | null {
+  if (!stored || stored === FIELDWORK_SYSTEM_PROMPT) return null;
+  return promptWordCount(stored);
 }
 
 export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSaveResults, onFollowUp, onRunLane }: MessageBubbleProps) {
@@ -40,6 +51,7 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
     () => (isUser ? { body, claims: [] as LedgerClaim[] } : splitClaimLedger(body)),
     [isUser, body],
   );
+  const promptWords = isUser ? null : customPromptWords(message.system_prompt);
 
   const sourceText = () =>
     results
@@ -223,6 +235,15 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
           <div className="flex items-center gap-1.5 text-[10px] text-text-muted">
             {message.search_enabled && <Globe size={9} />}
             <span className="font-mono">{message.model.split('/').pop()}</span>
+            {promptWords !== null && (
+              <span
+                title={`Answered with a custom system prompt (${promptWords} words) that was saved with this message, not the built-in one.`}
+                className="flex items-center gap-0.5 rounded border border-accent/30 bg-accent-subtle px-1 py-0.5 text-accent"
+              >
+                <FileText size={8} />
+                custom prompt
+              </span>
+            )}
           </div>
         )}
       </div>

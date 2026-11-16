@@ -30,7 +30,7 @@ Project ref: **`mhfsggpnnjyxsnshqatf`** (hardcoded in `scripts/import-keys.mjs`;
 | `20261115150000_add_request_rate_limits.sql` | present | **not applied** |
 | `20261115160000_user_engine_keys.sql` | present | **not applied** |
 | `llm-proxy` | rate limiting, session-scoped keys | **stale** |
-| `web-search` | `engine_status`, per-user keys, `key_fallback` | **stale** |
+| `web-search` | `engine_status`, per-user keys, `key_fallback`, the `GET` configuration probe | **stale** |
 
 Do not trust the table — the authoritative answer is the CLI:
 
@@ -184,6 +184,19 @@ curl -sS -X POST "$VITE_SUPABASE_URL/functions/v1/web-search" \
 
 Expected: a non-empty `engine_status` array. Its absence means the old function is still deployed.
 The payload must contain no key values — only names and statuses.
+
+**a2. The configuration probe answers**
+
+```bash
+curl -sS "$VITE_SUPABASE_URL/functions/v1/web-search" \
+  -H "apikey: $VITE_SUPABASE_ANON_KEY"
+```
+
+Expected: `{"configured":["EXA_API_KEY",...]}` — the secret *names* this deployment holds, never a
+value. A 500 here means the function predates the probe; the composer then keeps reporting those
+engines as "unknown", which is honest but not what the UI is for. Ten names live in
+`KNOWN_SECRETS` in `supabase/functions/web-search/index.ts`; add one there when a new engine needs a
+secret, or the probe will not report it.
 
 **b. Every engine's report is honest**
 

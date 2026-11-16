@@ -2,6 +2,14 @@ import { ResearchPreset } from '../types';
 import { supabase } from '../lib/supabase';
 import { clearModelHealth, modelHealthCount } from '../lib/api';
 import { PROVIDER_KEYS, describeKeys, parseProviderKeys } from '../lib/providerKeys';
+import {
+  ANSWER_BUDGET_WORDS,
+  clearPromptVariant,
+  describePromptVariant,
+  promptWordCount,
+  readPromptVariant,
+  savePromptVariant,
+} from '../lib/promptVariant';
 import { X, Layers, Cpu, Globe, Shield, Key, RotateCcw, Loader2, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
@@ -33,6 +41,22 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
   const [savingKeys, setSavingKeys] = useState(false);
   const [storedKeys, setStoredKeys] = useState<string[]>([]);
   const [keyMessage, setKeyMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [promptText, setPromptText] = useState('');
+  const [promptNote, setPromptNote] = useState<string | null>(null);
+  const activePrompt = describePromptVariant(readPromptVariant(userId));
+
+  const handleSavePrompt = () => {
+    savePromptVariant(userId, promptText);
+    const saved = readPromptVariant(userId);
+    setPromptText(saved ?? '');
+    setPromptNote(saved ? 'Variant saved — your next answer uses it.' : 'Empty, so the built-in prompt is in use.');
+  };
+
+  const handleResetPrompt = () => {
+    clearPromptVariant(userId);
+    setPromptText('');
+    setPromptNote('Built-in prompt restored.');
+  };
 
   const loadStoredKeys = async () => {
     if (!userId) return;
@@ -42,10 +66,11 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
 
   useEffect(() => {
     void loadStoredKeys();
+    setPromptText(readPromptVariant(userId) ?? '');
   }, [userId]);
 
   const handleSaveKeys = async () => {
-    const { keys, rejected, invalid } = parseProviderKeys(keyText);
+    const { keys, rejected, invalid, aliased } = parseProviderKeys(keyText);
     if (!userId) {
       setKeyMessage({ tone: 'error', text: 'Sign in before adding provider keys.' });
       return;
@@ -76,8 +101,11 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
 
     setKeyText('');
     await loadStoredKeys();
-    const note = rejected.length ? ` (skipped ${rejected.join(', ')})` : '';
-    setKeyMessage({ tone: 'ok', text: `Saved ${describeKeys(keys)}${note}` });
+    const note = [
+      aliased.length ? `saved ${aliased.map((alias) => `${alias.from} as ${alias.to}`).join(', ')}` : '',
+      rejected.length ? `skipped ${rejected.join(', ')}` : '',
+    ].filter(Boolean).join(' · ');
+    setKeyMessage({ tone: 'ok', text: `Saved ${describeKeys(keys)}${note ? ` (${note})` : ''}` });
   };
 
   useEffect(() => setHealthCount(modelHealthCount()), []);
@@ -205,6 +233,56 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
               <p className="mt-1.5 text-[10px] text-text-muted">
                 If an engine still reports a missing key after saving, the search function in this project is
                 an older build — redeploy it once and it will read these rows.
+              </p>
+            </div>
+          </div>
+
+          {/* Answer prompt — swap the prompt for a variant without a build or a deploy */}
+          <div>
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Answer prompt
+            </label>
+            <div className="rounded-lg border border-border-subtle bg-bg-elevated p-3">
+              <p className="mb-2 text-[11px] text-text-muted">
+                Leave empty to use the built-in prompt. A variant is used from your next turn on, so wording can be
+                compared on the same searches without touching code.
+              </p>
+              <textarea
+                value={promptText}
+                onChange={(event) => {
+                  setPromptText(event.target.value);
+                  setPromptNote(null);
+                }}
+                placeholder={`Leave empty for the built-in prompt (${describePromptVariant(null).words} words)…`}
+                spellCheck={false}
+                rows={8}
+                className="w-full resize-y rounded-lg border border-border-subtle bg-bg-base px-2.5 py-2 font-mono text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent/40"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleSavePrompt}
+                  className="flex items-center gap-1.5 rounded-lg bg-olive px-2.5 py-1.5 text-[11px] font-semibold text-bg-deep transition-colors hover:bg-olive-hover"
+                >
+                  <Check size={12} />
+                  Use this prompt
+                </button>
+                <button
+                  onClick={handleResetPrompt}
+                  disabled={activePrompt.source === 'default' && !promptText.trim()}
+                  className="flex items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 py-1.5 text-[11px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RotateCcw size={12} />
+                  Built-in
+                </button>
+                <span className={`text-[11px] ${promptWordCount(promptText) > ANSWER_BUDGET_WORDS ? 'text-warning' : 'text-text-muted'}`}>
+                  {promptText.trim() ? `${promptWordCount(promptText)} words typed` : `${activePrompt.words} words in the ${activePrompt.source === 'variant' ? 'active variant' : 'built-in prompt'}`}
+                </span>
+                {promptNote && <span className="text-[11px] text-olive">{promptNote}</span>}
+              </div>
+              <p className="mt-1.5 text-[10px] text-text-muted">
+                Stored on this device for this account only. Variants are not saved to your account, so a bad one cannot
+                follow you to another machine. The built-in prompt states a {ANSWER_BUDGET_WORDS}-word ceiling, a claim
+                ledger and citation rules — a variant that drops them changes what an answer is, not just its tone.
               </p>
             </div>
           </div>

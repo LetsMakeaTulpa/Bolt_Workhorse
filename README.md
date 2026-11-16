@@ -15,6 +15,8 @@ Supabase for data and edge functions, Featherless for inference.
 | experiments / tests | `experiments/` (plain Node scripts, no framework) |
 
 How the pieces fit — request path, fusion, keys, data model — is in [ARCHITECTURE.md](ARCHITECTURE.md).
+Before changing anything, read [CONTRIBUTING.md](CONTRIBUTING.md): it is the merge gate and the rules
+around it.
 
 ## Setup
 
@@ -228,3 +230,6 @@ npx esbuild src/lib/api.ts --bundle --format=esm --outfile=/tmp/api.mjs \
 bash experiments/rls-probe.sh                   # read-only probes against the live database
 node scripts/import-keys.mjs experiments/fixtures/keys-sample.txt --out-dir /tmp/keytest
 ```
+
+The rules behind this gate — what a skip means, how to add a check so it cannot drift from the code
+it tests, and which commands are banned and why — live in [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -2,6 +2,7 @@
 // mean "built-in", a variant has to stay per account, and a broken storage must not break answering.
 // Run: node experiments/prompt-variant.test.mjs
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -11,8 +12,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const OUT = (process.env.VARIANT_MODULE ?? '/tmp/fieldwork-prompt-variant.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const OUT = (process.env.VARIANT_MODULE ?? tmpPath('fieldwork-prompt-variant.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/promptVariant.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'],

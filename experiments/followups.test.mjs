@@ -1,12 +1,13 @@
 // The follow-up section is stripped from the rendered answer, so a parser bug either loses real
 // prose or leaks machinery into the bubble. Both are checked here.
+import { asUrl, tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 
-const OUT = '/tmp/fieldwork-followups.mjs';
-execFileSync('npx', ['--yes', 'esbuild', 'src/lib/followUps.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'], {
+const OUT = tmpPath('fieldwork-followups.mjs');
+execFileSync(process.execPath, [ESBUILD, 'src/lib/followUps.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'], {
   stdio: 'inherit',
 });
-const { splitFollowUps } = await import(`${OUT}?t=${Date.now()}`);
+const { splitFollowUps } = await import(`${asUrl(OUT)}?t=${Date.now()}`);
 
 let passed = 0;
 const failures = [];

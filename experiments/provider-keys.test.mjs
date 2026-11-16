@@ -1,11 +1,11 @@
 // The paste box writes rows the search function reads by name, so a parser mistake either stores
 // a key the function never looks for or silently drops one.
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 // the local esbuild entry point under node directly: `npx` cannot be spawned from cmd.exe
-const OUT = (process.env.PROVIDER_KEYS_MODULE ?? '/tmp/fieldwork-provider-keys.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const OUT = (process.env.PROVIDER_KEYS_MODULE ?? tmpPath('fieldwork-provider-keys.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/providerKeys.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'],

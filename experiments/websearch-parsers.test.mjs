@@ -1,10 +1,11 @@
 // Fixture tests for the web-search response mappers.
 // Run: npx esbuild supabase/functions/web-search/parsers.ts --bundle --format=esm \
 //        --outfile=/tmp/parsers.mjs && node experiments/websearch-parsers.test.mjs
+import { asUrl, tmpPath, ESBUILD } from './lib/build.mjs';
 import assert from 'node:assert/strict';
 
-const modulePath = process.env.PARSERS_MODULE ?? '/tmp/parsers.mjs';
-const { mapExaResults, mapGrepHits, mapShodanMatches, mapTavilyResults, stripMarkup } = await import(modulePath);
+const modulePath = process.env.PARSERS_MODULE ?? tmpPath('parsers.mjs');
+const { mapExaResults, mapGrepHits, mapShodanMatches, mapTavilyResults, stripMarkup } = await import(asUrl(modulePath));
 
 // ─── grep.app ────────────────────────────────────────────────────
 const grepPayload = {
@@ -169,13 +170,13 @@ assert.deepEqual(mapTavilyResults({ results: {} }, 5), [], 'wrong shape is safe'
 // The point of the paid engines is that they survive ranking, de-duplication and attribution,
 // so feed their mapped output into fuseResults exactly as the app does.
 const { execFileSync } = await import('node:child_process');
-const FUSION_MODULE = '/tmp/fieldwork-fusion-test.mjs';
+const FUSION_MODULE = tmpPath('fieldwork-fusion-test.mjs');
 execFileSync(
-  'npx',
-  ['--yes', 'esbuild', 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${FUSION_MODULE}`, '--log-level=error'],
+  process.execPath,
+  [ESBUILD, 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${FUSION_MODULE}`, '--log-level=error'],
   { stdio: 'inherit' },
 );
-const { fuseResults } = await import(`${FUSION_MODULE}?t=${Date.now()}`);
+const { fuseResults } = await import(`${asUrl(FUSION_MODULE)}?t=${Date.now()}`);
 
 const fused = fuseResults('graph neural networks', {
   exa: exaResults,
@@ -204,7 +205,10 @@ assert.ok(fused.every((item) => item.snippet && item.snippet.length > 0), 'snipp
 const offTopic = fuseResults('graph neural networks', {
   exa: [{ title: 'Best pizza in Naples', url: 'https://example.test/pizza', snippet: 'dough and tomatoes', source_engine: 'exa' }],
 });
-assert.equal(offTopic.length, 0, 'relevance gating drops unrelated results');
+// the gate relaxes instead of returning an empty page: an unrelated result is kept but scored low
+// (fusion-intent pins the same contract through fuseResultsDetailed's `relaxed` flag)
+assert.equal(offTopic.length, 1, 'a lone off-topic result is kept rather than emptying the page');
+assert.ok(offTopic[0].relevance < 0.35, `off-topic relevance stays below the gate (${offTopic[0].relevance})`);
 
 // ─── shared helper ───────────────────────────────────────────────
 assert.equal(stripMarkup('<b>a</b> &amp; <i>b</i>'), 'a & b');

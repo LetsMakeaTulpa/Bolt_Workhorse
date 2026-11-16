@@ -222,6 +222,10 @@ export const DORK_ENGINES = new Set(['duckduckgo', 'brave', 'google', 'exa', 'se
 /** Works out of the box today: keyless browser engines plus the deployed server set. */
 export const DEFAULT_ENGINES = [
   'duckduckgo',
+  // a self-hosted SearXNG is the one general-web engine that needs no paid key: selected by
+  // default so configuring SEARXNG_URL is enough to search the open web, and reported as
+  // missing_key until it is
+  'searxng',
   'wikipedia',
   'arxiv',
   'github',

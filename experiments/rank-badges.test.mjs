@@ -1,11 +1,11 @@
 // The badges tell the user why a source sits where it sits, so they must agree with the multipliers
 // fusion actually applied — including the case where the date played no part at all.
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 // the local esbuild entry point under node directly: `npx` cannot be spawned from cmd.exe
-const DIR = (process.env.BADGES_DIR ?? '/tmp').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const DIR = (process.env.BADGES_DIR ?? tmpPath('')).replaceAll('\\', '/');
 const OUT = `${DIR}/fieldwork-rank-explain.mjs`;
 const FUSION = `${DIR}/fieldwork-rank-fusion.mjs`;
 const build = (entry, out) =>

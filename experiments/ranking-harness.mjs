@@ -23,6 +23,7 @@
 // contested query pairs two results with near-identical term coverage so only engine trust or a
 // publication date can separate them.
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -50,8 +51,7 @@ const QUERY_MARGIN_DROP = 0.05;
 // ── fusion, bundled straight from source ─────────────────────────────────────
 // The local esbuild JS entry point runs under node directly: spawning `npx` through cmd.exe on
 // Windows cannot find the binary, and shell quoting would mangle the define flags.
-const MODULE = (process.env.RANKING_MODULE ?? '/tmp/fieldwork-ranking-fusion.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const MODULE = (process.env.RANKING_MODULE ?? tmpPath('fieldwork-ranking-fusion.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],

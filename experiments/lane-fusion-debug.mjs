@@ -8,7 +8,7 @@ const target = process.argv[2] ?? 'tesla.com';
 const lane = process.argv[3] ?? 'Exposed files';
 
 const { fuseResults, stripDorkOperators, tokens } = await import(
-  process.env.FUSION_MODULE ?? '/tmp/fusion.mjs'
+  process.env.FUSION_MODULE ?? tmpPath('fusion.mjs')
 );
 
 const TEMPLATES = [

@@ -10,6 +10,7 @@
 // Twenty-eight queries is still a small sample, so a value is only reported as "earning its place"
 // when it improves the tuned queries without giving up ground on the held-out classes.
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -20,8 +21,7 @@ const ABLATE = args.includes('--ablate');
 
 const FIXTURE_PATH = 'experiments/fixtures/ranking-queries.json';
 // run the local esbuild under node directly: `npx` cannot be spawned through cmd.exe on Windows
-const MODULE = (process.env.RANKING_MODULE ?? '/tmp/fieldwork-ranking-sweep.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const MODULE = (process.env.RANKING_MODULE ?? tmpPath('fieldwork-ranking-sweep.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],

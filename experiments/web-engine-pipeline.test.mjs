@@ -2,6 +2,7 @@
 // path request → engine → parser → RRF → response (and the new per-engine diagnostics).
 // Run: node experiments/web-engine-pipeline.test.mjs
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -13,19 +14,20 @@ const check = (name, ok, detail = '') => {
 
 // forward slashes so this bundle call also works when spawned through cmd.exe on Windows
 const STUB = `${process.cwd()}/experiments/fixtures/supabase-stub.mjs`.replaceAll('\\', '/');
-const OUT = (process.env.PIPELINE_MODULE ?? '/tmp/web-search-pipeline.mjs').replaceAll('\\', '/');
+const OUT = (process.env.PIPELINE_MODULE ?? tmpPath('web-search-pipeline.mjs')).replaceAll('\\', '/');
 const WINDOWS = process.platform === 'win32';
 
 execFileSync(
-  WINDOWS ? 'npx.cmd' : 'npx',
+  process.execPath,
   [
-    '--yes', 'esbuild', 'supabase/functions/web-search/index.ts',
+    ESBUILD, 'supabase/functions/web-search/index.ts',
     '--bundle', '--format=esm', `--outfile=${OUT}`,
     // the stub is self-contained, so bundling it in keeps the artifact loadable by path on any OS
     '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB, '--log-level=error',
   ],
   // cmd.exe cannot spawn a .cmd without a shell
-  { stdio: 'inherit', shell: WINDOWS },
+  // no shell: cmd.exe would split the node path at its spaces
+  { stdio: 'inherit' },
 );
 
 // ── Deno stand-in ─────────────────────────────────────────────────────────────

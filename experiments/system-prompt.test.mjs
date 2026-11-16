@@ -3,6 +3,7 @@
 // parser still finds its trailing section.
 // Run: node experiments/system-prompt.test.mjs
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -14,8 +15,7 @@ const check = (name, ok, detail = '') => {
 
 // the local esbuild entry point under node directly: `npx` cannot be spawned from cmd.exe, and a
 // shell would mangle quoting
-const OUT = (process.env.PROMPT_MODULE ?? '/tmp/fieldwork-system-prompt.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const OUT = (process.env.PROMPT_MODULE ?? tmpPath('fieldwork-system-prompt.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/systemPrompt.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'],

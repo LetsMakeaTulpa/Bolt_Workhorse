@@ -15,7 +15,11 @@ LIVE=0
 PASS=()
 FAIL=()
 SKIP=()
-LOG=/tmp/smoke-step.log
+# Node reads a literal /tmp as C:\tmp on Windows, so ask the runtime where temp actually is, and
+# run esbuild under node: `npx` cannot be spawned through cmd.exe
+TMP="$(node -e 'process.stdout.write(require("node:os").tmpdir())')"
+ESBUILD_BIN="$PWD/node_modules/esbuild/bin/esbuild"
+LOG="$TMP/smoke-step.log"
 
 run() {
   local name="$1"
@@ -37,24 +41,25 @@ skip() {
 }
 
 model_fallback() {
-  npx --yes esbuild src/lib/api.ts \
-    --bundle --format=esm --outfile=/tmp/smoke-api.mjs \
+  node "$ESBUILD_BIN" src/lib/api.ts \
+    --bundle --format=esm --outfile="$TMP/smoke-api.mjs" \
     --define:import.meta.env.VITE_SUPABASE_URL='"https://proxy.test"' \
     --define:import.meta.env.VITE_SUPABASE_ANON_KEY='"anon"' \
     --log-level=error || return 1
-  API_MODULE=/tmp/smoke-api.mjs node experiments/model-fallback.test.mjs
+  API_MODULE="$TMP/smoke-api.mjs" node experiments/model-fallback.test.mjs
 }
 
 listeners() {
-  node scripts/import-keys.mjs experiments/fixtures/keys-sample.txt --out-dir /tmp/smoke-keys >/dev/null
+  # not `keys*.txt`: that pattern is ignored, so a fixture under it could never be committed
+  node scripts/import-keys.mjs experiments/fixtures/key-dump-sample.txt --out-dir "$TMP/smoke-keys" >/dev/null
 }
 
 # 1. the app must typecheck and build
 run "build (tsc + vite)" npm run build
 
 parsers() {
-  npx --yes esbuild supabase/functions/web-search/parsers.ts \
-    --bundle --format=esm --outfile=/tmp/parsers.mjs --log-level=error || return 1
+  node "$ESBUILD_BIN" supabase/functions/web-search/parsers.ts \
+    --bundle --format=esm --outfile="$TMP/parsers.mjs" --log-level=error || return 1
   node experiments/websearch-parsers.test.mjs
 }
 
@@ -121,9 +126,9 @@ key_status() {
   # the test renders with; a /tmp bundle cannot see node_modules
   local out=node_modules/.cache/fieldwork
   mkdir -p "$out"
-  npx --yes esbuild src/lib/engineKeyStatus.ts --bundle --format=esm \
+  node "$ESBUILD_BIN" src/lib/engineKeyStatus.ts --bundle --format=esm \
     --outfile="$out/engine-key-status.mjs" --log-level=error || return 1
-  npx --yes esbuild src/components/EngineKeyRow.tsx --bundle --format=esm --jsx=automatic \
+  node "$ESBUILD_BIN" src/components/EngineKeyRow.tsx --bundle --format=esm --jsx=automatic \
     --external:react --external:react-dom \
     --outfile="$out/engine-key-row.mjs" --log-level=error || return 1
   KEYSTATUS_MODULE="$PWD/$out/engine-key-status.mjs" KEYROW_MODULE="$PWD/$out/engine-key-row.mjs" \
@@ -168,10 +173,17 @@ ranking_benchmark() {
 # 4h. contested query set: intent weighting must not rank worse than flat trust
 run "ranking benchmark" ranking_benchmark
 
+searxng_adapter() {
+  node experiments/searxng.test.mjs
+}
+
+# 4n. the keyless meta-engine: comma-separated instances, a dead one, and HTML-only answers
+run "searxng adapter" searxng_adapter
+
 # 5. database tests need PGlite, which is test-only and not in package.json
 if [ ! -d node_modules/@electric-sql/pglite ]; then
   printf '→ installing @electric-sql/pglite (test-only, not saved)\n'
-  if npm install --no-save @electric-sql/pglite >/tmp/smoke-pglite.log 2>&1; then
+  if npm install --no-save @electric-sql/pglite >"$TMP/smoke-pglite.log" 2>&1; then
     printf '  installed\n'
   else
     PGLITE_MISSING=1

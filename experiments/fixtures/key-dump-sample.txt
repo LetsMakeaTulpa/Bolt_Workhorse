@@ -1,0 +1,9 @@
+# Fake values only: this fixture proves the importer classifies a real-shaped dump and writes
+# nothing it cannot use. Every key here is a placeholder and must never be replaced with a real one.
+EXA_API_KEY_1=11111111-2222-3333-4444-555555555555
+TAVILY_API_KEY=tvly-dev-00000000000000000000000000000000
+FIRECRAWL_API_KEY=fc-00000000000000000000000000000000
+
+# providers this app cannot use: reported, never written
+OPENAI_API_KEY=sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+SERPER_API_KEY=0123456789abcdef0123456789abcdef01234567

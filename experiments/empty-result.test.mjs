@@ -2,6 +2,7 @@
 // terminal message: what it names, in what order, and what it must never contain.
 // Run: node experiments/empty-result.test.mjs
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -11,8 +12,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const OUT = (process.env.EMPTY_MODULE ?? '/tmp/fieldwork-empty-result.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const OUT = (process.env.EMPTY_MODULE ?? tmpPath('fieldwork-empty-result.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/emptyResult.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'],

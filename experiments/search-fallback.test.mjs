@@ -3,6 +3,7 @@
 // order is stable so a retry is predictable.
 // Run: node experiments/search-fallback.test.mjs
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -12,8 +13,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const OUT = (process.env.ENGINES_MODULE ?? '/tmp/fieldwork-engines.mjs').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const OUT = (process.env.ENGINES_MODULE ?? tmpPath('fieldwork-engines.mjs')).replaceAll('\\', '/');
 execFileSync(
   process.execPath,
   [ESBUILD, 'src/lib/engines.ts', '--bundle', '--format=esm', `--outfile=${OUT}`, '--log-level=error'],

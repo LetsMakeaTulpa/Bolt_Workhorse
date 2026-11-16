@@ -1,3 +1,4 @@
+import { asUrl, bundle, installWebSocketStub, tmpPath } from './lib/build.mjs';
 // Drives the real api.ts fallback logic against a stubbed llm-proxy.
 // Run: npx esbuild src/lib/api.ts --bundle --format=esm --outfile=/tmp/api.mjs \
 //        --define:import.meta.env.VITE_SUPABASE_URL='"https://proxy.test"' \
@@ -12,19 +13,22 @@ globalThis.localStorage = {
 };
 
 // supabase-js builds a realtime client eagerly on import and insists on a WebSocket constructor,
-// which Node 20 does not have. Nothing here opens a socket, so a stub is enough to import api.ts.
-if (!globalThis.WebSocket) {
-  globalThis.WebSocket = class {
-    close() {}
-    addEventListener() {}
-    removeEventListener() {}
-  };
+// which Node 20 does not have. Nothing here opens a socket, so the shared stub is enough.
+installWebSocketStub();
+
+// run on its own, this suite has to build api.ts itself; smoke passes a module it already built
+const API_PATH = process.env.API_MODULE ?? tmpPath('api.mjs');
+if (!process.env.API_MODULE) {
+  bundle('src/lib/api.ts', API_PATH, [
+    '--define:import.meta.env.VITE_SUPABASE_URL="https://proxy.test"',
+    '--define:import.meta.env.VITE_SUPABASE_ANON_KEY="anon"',
+  ]);
 }
 
 const {
   chatCompletion, fallbackChain, isRetryableModelError, modelReliability, recordModelResult,
   modelHealthCount, clearModelHealth, getModelHealth,
-} = await import(process.env.API_MODULE ?? '/tmp/api.mjs');
+} = await import(asUrl(API_PATH));
 
 const results = [];
 const check = (name, ok, detail = '') => {

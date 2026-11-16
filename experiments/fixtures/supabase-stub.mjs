@@ -1,15 +1,15 @@
 // Minimal stand-in for @supabase/supabase-js so the llm-proxy handler can run under Node.
 // State is published on globalThis because esbuild may inline this module into the bundle.
 
-const state = {
+// One shared object per process: esbuild may inline this module into a bundle, so a second copy
+// (the test's own import) must mutate the same state the bundled handler reads.
+const state = (globalThis.__supabaseStub ??= {
   quota: { minute: Infinity, day: Infinity },
   used: { minute: 0, day: 0 },
   rpcCalls: [],
   authCalls: [],
   config: { featherless_api_key: 'test-featherless-key', default_model: 'stub/model' },
-};
-
-globalThis.__supabaseStub = state;
+});
 
 export function reset(overrides = {}) {
   state.quota = { minute: Infinity, day: Infinity, ...(overrides.quota ?? {}) };

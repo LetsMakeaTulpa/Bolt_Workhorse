@@ -2,6 +2,7 @@
 // and that only the service role can touch either the counter table or the function.
 // Run: node experiments/rate-limit.test.mjs
 
+import { asUrl, tmpPath, ESBUILD } from './lib/build.mjs';
 import { readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { PGlite } from '@electric-sql/pglite';
@@ -14,17 +15,17 @@ const check = (name, ok, detail = '') => {
 
 // 1. the helpers the Deno function imports, bundled and run as-is
 execFileSync(
-  'npx',
+  process.execPath,
   [
-    '--yes', 'esbuild', 'supabase/functions/llm-proxy/rateLimit.ts',
-    '--bundle', '--format=esm', '--outfile=/tmp/rate-limit.mjs', '--log-level=error',
+    ESBUILD, 'supabase/functions/llm-proxy/rateLimit.ts',
+    '--bundle', '--format=esm', `--outfile=${tmpPath('rate-limit.mjs')}`, '--log-level=error',
   ],
   { stdio: 'inherit' },
 );
 
 const {
   LIMITS, bucketKey, clientIp, retryAfterSeconds, rateLimitedMessage,
-} = await import('/tmp/rate-limit.mjs');
+} = await import(asUrl(tmpPath('rate-limit.mjs')));
 
 const ipFrom = (entries) => clientIp(new Headers(entries));
 
@@ -170,11 +171,13 @@ check(
 // 4. the proxy handler itself: refuses before spending credit, and tiers by identity
 const STUB = `${process.cwd()}/experiments/fixtures/supabase-stub.mjs`;
 execFileSync(
-  'npx',
+  process.execPath,
   [
-    '--yes', 'esbuild', 'supabase/functions/llm-proxy/index.ts',
-    '--bundle', '--format=esm', '--outfile=/tmp/llm-proxy.mjs',
-    '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB, `--external:${STUB}`, '--log-level=error',
+    ESBUILD, 'supabase/functions/llm-proxy/index.ts',
+    '--bundle', '--format=esm', `--outfile=${tmpPath('llm-proxy.mjs')}`,
+    // bundled, not external: an external Windows path becomes the URL scheme `c:` at run time,
+    // and the stub publishes its state on globalThis so both copies share it anyway
+    '--alias:npm:@supabase/supabase-js@2.45.4=' + STUB, '--log-level=error',
   ],
   { stdio: 'inherit' },
 );
@@ -184,8 +187,8 @@ globalThis.Deno = {
   serve: () => {},
 };
 
-const stub = await import(STUB);
-const { handleRequest } = await import('/tmp/llm-proxy.mjs');
+const stub = await import(asUrl(STUB));
+const { handleRequest } = await import(asUrl(tmpPath('llm-proxy.mjs')));
 
 let featherlessCalls = 0;
 globalThis.fetch = async () => {

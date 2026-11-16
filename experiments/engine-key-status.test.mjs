@@ -1,13 +1,14 @@
 // Whether the composer can tell an engine is unusable before it runs.
 // Run: npx esbuild src/lib/engineKeyStatus.ts --bundle --format=esm --outfile=/tmp/engine-key-status.mjs \
 //        && node experiments/engine-key-status.test.mjs
+import { tmpPath } from './lib/build.mjs';
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 // smoke passes plain paths; `import()` needs a URL when that path is a Windows one
 const asUrl = (path) => (path.startsWith('file:') ? path : pathToFileURL(path).href);
 
-const modulePath = asUrl(process.env.KEYSTATUS_MODULE ?? '/tmp/engine-key-status.mjs');
+const modulePath = asUrl(process.env.KEYSTATUS_MODULE ?? tmpPath('engine-key-status.mjs'));
 const { engineKeyRow, engineKeyStatus } = await import(modulePath);
 
 const results = [];

@@ -3,6 +3,7 @@
 // from recency when the query actually asks for freshness.
 // Run: node experiments/fusion-intent.test.mjs
 
+import { tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -13,12 +14,13 @@ const check = (name, ok, detail = '') => {
 };
 
 // forward slashes and a real shell so the bundle also builds when spawned through cmd.exe
-const MODULE = (process.env.FUSION_MODULE ?? '/tmp/fieldwork-fusion-intent.mjs').replaceAll('\\', '/');
+const MODULE = (process.env.FUSION_MODULE ?? tmpPath('fieldwork-fusion-intent.mjs')).replaceAll('\\', '/');
 const WINDOWS = process.platform === 'win32';
 execFileSync(
-  WINDOWS ? 'npx.cmd' : 'npx',
-  ['--yes', 'esbuild', 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
-  { stdio: 'inherit', shell: WINDOWS },
+  process.execPath,
+  [ESBUILD, 'src/lib/fusion.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
+  // no shell: cmd.exe would split the node path at its spaces
+  { stdio: 'inherit' },
 );
 
 // a file URL, not a bare path: Windows would read `C:/…` as the protocol `c:`

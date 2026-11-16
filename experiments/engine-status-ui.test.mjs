@@ -2,6 +2,7 @@
 // and that lane runs do not pile up duplicates.
 // Run: node experiments/engine-status-ui.test.mjs
 
+import { asUrl, tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 
 const results = [];
@@ -10,14 +11,14 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const MODULE = '/tmp/fieldwork-engines.mjs';
+const MODULE = tmpPath('fieldwork-engines.mjs');
 execFileSync(
-  'npx',
-  ['--yes', 'esbuild', 'src/lib/engines.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
+  process.execPath,
+  [ESBUILD, 'src/lib/engines.ts', '--bundle', '--format=esm', `--outfile=${MODULE}`, '--log-level=error'],
   { stdio: 'inherit' },
 );
 
-const { engineIssueLabel, mergeEngineIssues, summarizeEngineStatus } = await import(`${MODULE}?t=${Date.now()}`);
+const { engineIssueLabel, mergeEngineIssues, summarizeEngineStatus } = await import(`${asUrl(MODULE)}?t=${Date.now()}`);
 
 // ── wording ──────────────────────────────────────────────────────────────────
 check('missing_key reads as a setup problem', engineIssueLabel('missing_key') === 'missing key');

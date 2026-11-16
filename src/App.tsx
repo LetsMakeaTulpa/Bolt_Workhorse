@@ -22,6 +22,9 @@ import { Menu, Settings, Search, Compass, PanelRightClose, PanelRight, Activity,
 
 const DEFAULT_MODEL = 'xortron/RESTRICTED-RESEARCH-MODEL';
 
+/** Appended to an answer the user stopped mid-stream: the row must never read as finished prose. */
+const STOPPED_NOTE = '_(Stopped before completion — this is a partial answer.)_';
+
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
@@ -417,15 +420,25 @@ export default function App() {
             : a
         ));
       },
-      // the stream was stopped on purpose: keep the partial answer visible, mark it as cut off,
-      // and do not persist it — a half-sentence is not a source anyone should cite later
-      onAbort: (partial) => {
+      // the stream was stopped on purpose. The partial is labelled and persisted: dropping it makes
+      // the turn vanish on reload, which reads as though the question was never answered at all.
+      onAbort: async (partial) => {
         setIsStreaming(false);
         setStreamingContent('');
         // the abort path may hand back less than onToken already delivered, so trust the longer one
         const kept = (partial.length > fullContent.length ? partial : fullContent).trim();
-        const stopped = kept ? `${kept}\n\n_(stopped)_` : '_(stopped)_';
+        const stopped = kept ? `${kept}\n\n${STOPPED_NOTE}` : STOPPED_NOTE;
         setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, content: stopped } : m)));
+
+        // nothing streamed yet: a row that only says "stopped" would be noise in the transcript
+        if (kept) {
+          await supabase.from('messages').insert({
+            conversation_id: conv!.id, role: 'assistant', content: stopped,
+            model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
+          });
+          await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv!.id);
+        }
+
         setActivityLogs((prev) => prev.map((a) =>
           a.id === synthLog?.id
             ? { ...a, status: 'completed', description: 'Synthesis stopped' }

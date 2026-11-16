@@ -1,12 +1,12 @@
 // A superseded search must stop working, not just have its answer dropped. Abort has to reach the
 // network, or a cancelled run keeps spending provider rate limit for a result nobody will read.
+import { installWebSocketStub, tmpPath, ESBUILD } from './lib/build.mjs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 // The local esbuild JS entry point is run under node directly: spawning `npx` through cmd.exe
 // strips the quotes in --define and turns the value into invalid JSON.
-const DIR = (process.env.ABORT_DIR ?? '/tmp').replaceAll('\\', '/');
-const ESBUILD = `${process.cwd()}/node_modules/esbuild/bin/esbuild`.replaceAll('\\', '/');
+const DIR = (process.env.ABORT_DIR ?? tmpPath('')).replaceAll('\\', '/');
 const API = `${DIR}/fieldwork-abort-api.mjs`;
 const CLIENT = `${DIR}/fieldwork-abort-client.mjs`;
 const GUARD = `${DIR}/fieldwork-abort-guard.mjs`;
@@ -33,15 +33,8 @@ globalThis.localStorage = {
   removeItem: (k) => store.delete(k),
 };
 globalThis.window = globalThis;
-// Node 20 has no native WebSocket, and supabase-js builds its realtime client eagerly
-class WebSocketStub {
-  constructor() {}
-  addEventListener() {}
-  removeEventListener() {}
-  send() {}
-  close() {}
-}
-globalThis.WebSocket = WebSocketStub;
+// supabase-js builds its realtime client eagerly and Node 20 has no WebSocket
+installWebSocketStub();
 
 const abortError = () => Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
 

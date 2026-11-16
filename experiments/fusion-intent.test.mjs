@@ -65,10 +65,12 @@ const freshWeights = engineWeights('latest AI regulation news', NOW);
 check('Tavily outranks Exa on a recency query', freshWeights.tavily > freshWeights.exa, `tavily=${freshWeights.tavily.toFixed(2)} exa=${freshWeights.exa.toFixed(2)}`);
 check('Tavily is lifted above its baseline for recency', freshWeights.tavily > 1.1, `tavily=${freshWeights.tavily.toFixed(2)}`);
 check('Exa is damped on recency queries', freshWeights.exa < 1.2, `exa=${freshWeights.exa.toFixed(2)}`);
-check('freshness also lifts the crawl engines', freshWeights.brave > 1.1 || freshWeights.google > 1.2);
+// the crawl-engine freshness lifts were removed: the benchmark scored them at zero
+check('freshness does not lift the crawl engines', !(freshWeights.brave > 1.1) && !(freshWeights.google > 1.2), `brave=${freshWeights.brave.toFixed(2)} google=${freshWeights.google.toFixed(2)}`);
 
 const evergreenWeights = engineWeights('history of the roman republic', NOW);
-check('Tavily is damped on a timeless question', evergreenWeights.tavily < 1.1, `tavily=${evergreenWeights.tavily.toFixed(2)}`);
+// the evergreen damping was removed: the ablation sweep scored it at zero
+check('Tavily stays at its base weight on a timeless question', evergreenWeights.tavily === 1.1, `tavily=${evergreenWeights.tavily.toFixed(2)}`);
 check('Exa keeps its edge on a timeless question', evergreenWeights.exa >= evergreenWeights.tavily);
 
 const navWeights = engineWeights('CVE-2024-3094 exploit', NOW);
@@ -128,8 +130,9 @@ const semanticRanked = fuseResults(
 );
 check('semantic query: the Exa result leads', semanticRanked[0]?.source_engine === 'exa', semanticRanked.map((r) => r.source_engine).join(' > '));
 
-// recency must never rescue an irrelevant result
-const irrelevant = fuseResults(
+// recency must never rescue an irrelevant result — but an empty page is worse than a loose one, so
+// the result is returned flagged instead of dropped
+const irrelevant = fuseResultsDetailed(
   'latest eu ai act enforcement',
   {
     tavily: [
@@ -138,7 +141,8 @@ const irrelevant = fuseResults(
   },
   { now: NOW, limit: 10 },
 );
-check('a fresh but irrelevant result is still dropped', irrelevant.length === 0, `${irrelevant.length} kept`);
+check('a fresh but irrelevant result is flagged, not silently dropped', irrelevant.results.length === 1 && irrelevant.relaxed === true, `${irrelevant.results.length} kept, relaxed=${irrelevant.relaxed}`);
+check('and it is not scored as a confident match', irrelevant.results[0].relevance < 0.1, String(irrelevant.results[0].relevance));
 
 // per-lane yield: an engine that answers with off-topic filler is visible after the gate
 const laneDetail = fuseResultsDetailed(
@@ -208,6 +212,28 @@ check(
   'a lane that returned only off-topic results is wasted, not dead',
   laneContribution([{ lane: 'exa', engine: 'exa', returned: 2, kept: 0, offTopic: 2 }]).dead.length === 0,
 );
+
+// An empty page must not be the outcome of engines that did answer. When no result clears the
+// relevance gate, fusion keeps the pool and says the gate was relaxed.
+const offTopic = fuseResultsDetailed(
+  'postgres index bloat',
+  {
+    exa: [{ title: 'Roman Republic', url: 'https://en.wikipedia.example/rome', snippet: 'Classical civilisation', source_engine: 'exa' }],
+    tavily: [{ title: 'Solar inverter recall', url: 'https://energy.example/recall', snippet: 'Firmware bulletin', source_engine: 'tavily' }],
+  },
+  { now: NOW },
+);
+check('engines that answered nothing relevant still produce a list', offTopic.results.length === 2, `results=${offTopic.results.length}`);
+check('and the relaxed gate is reported', offTopic.relaxed === true);
+check('the relaxed list keeps the engine names', offTopic.results.every((item) => item.source_engine && item.citation_id));
+
+const gated = fuseResultsDetailed(
+  'graph neural networks',
+  { exa: [{ title: 'Graph neural networks survey', url: 'https://gnn.example.com/s', snippet: 'graph neural networks', source_engine: 'exa' }] },
+  { now: NOW },
+);
+check('a normal run is not marked relaxed', gated.relaxed === false);
+check('no candidates is not a relaxed page', fuseResultsDetailed('q', { exa: [] }, { now: NOW }).relaxed === false);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);

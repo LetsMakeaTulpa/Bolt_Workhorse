@@ -237,14 +237,12 @@ export function engineWeights(
   weights.exa = clamp(
     weights.exa + 0.45 * intent.semantic - 0.5 * intent.navigational - 0.2 * intent.fresh,
   );
-  weights.tavily = clamp(
-    weights.tavily + 0.45 * intent.fresh - 0.25 * intent.evergreen + 0.1 * intent.semantic - 0.1 * intent.navigational,
-  );
-  weights.google = clamp((weights.google ?? 1.2) + 0.15 * intent.fresh);
-  weights.brave = clamp((weights.brave ?? 1.1) + 0.1 * intent.fresh);
-  weights.arxiv = clamp((weights.arxiv ?? 0.8) - 0.15 * intent.fresh);
-  weights.openalex = clamp((weights.openalex ?? 0.7) - 0.1 * intent.fresh);
-
+  weights.tavily = clamp(weights.tavily + 0.45 * intent.fresh);
+  // Deltas are kept only where the ablation sweep separates them from zero on the contested
+  // fixture. A freshness lift for google or brave and the preprint damping for arxiv/openalex all
+  // scored 0.000 nDCG and 0.000 margin, and no fixture could ever move them: it has no arxiv or
+  // openalex lists at all, and a google/brave list never holds two dated candidates that freshness
+  // could reorder. They were removed rather than left as tuning nothing can falsify.
   return weights;
 }
 
@@ -292,8 +290,14 @@ export interface FusionOptions {
   relevanceExponent?: number;
 }
 
-/** IDF-weighted term coverage of the title/snippet by the query. */
-function relevance(query: string, item: Source, df: Map<string, number>, total: number): number {
+/**
+ * IDF-weighted term coverage of the title/snippet by the query.
+ *
+ * Exported so the ranking benchmark can prove a fixture pair is actually tied on coverage rather
+ * than describing it as tied: two results with the same coverage can only be separated by engine
+ * trust or a date, which is what makes a contestable query discriminating.
+ */
+export function termCoverage(query: string, item: Source, df: Map<string, number>, total: number): number {
   const queryTokens = tokens(query);
   if (queryTokens.length === 0) return 0.5;
   const title = String(item.title ?? '').toLowerCase();
@@ -407,7 +411,7 @@ export function fuseResultsDetailed(
   query: string,
   lists: Record<string, Source[]>,
   options: FusionOptions = {},
-): { results: Source[]; laneYield: LaneYield[] } {
+): { results: Source[]; laneYield: LaneYield[]; relaxed: boolean } {
   const {
     limit = 40,
     perDomain = 2,
@@ -459,7 +463,7 @@ export function fuseResultsDetailed(
       });
     });
   }
-  if (all.length === 0) return { results: [], laneYield: [...yieldByLane.values()] };
+  if (all.length === 0) return { results: [], laneYield: [...yieldByLane.values()], relaxed: false };
 
   const df = new Map<string, number>();
   for (const item of all) {
@@ -469,7 +473,7 @@ export function fuseResultsDetailed(
   }
 
   for (const item of all) {
-    item.rel = relevance(relevanceQuery, item, df, all.length);
+    item.rel = termCoverage(relevanceQuery, item, df, all.length);
     // a freshness-seeking query lifts dated recent results; a timeless one ignores dates
     item.recency = useRecency ? recencyWeight(item.published, intent.fresh, now) : 0;
     // Freshness multiplies rather than adds, so it scales with how well the result already
@@ -479,7 +483,13 @@ export function fuseResultsDetailed(
   }
 
   const best = Math.max(...all.map((item) => item.rel));
-  const kept = all.filter((item) => item.rel >= Math.max(0.1, relativeGate * best));
+  const gate = Math.max(0.1, relativeGate * best);
+  let kept = all.filter((item) => item.rel >= gate);
+  // An empty page is never a better answer than a loosely related one. When nothing clears the
+  // gate — every engine answered with text that shares no term with the query, say — keep the pool
+  // in score order and report that the gate was relaxed, rather than showing nothing at all.
+  const relaxed = kept.length === 0 && all.length > 0;
+  if (relaxed) kept = all;
   for (const item of kept) yieldByLane.get(item.lane)!.kept += 1;
   const strong = kept.filter((item) => item.rel >= 0.5);
   const tail = kept.filter((item) => item.rel < 0.5);
@@ -547,7 +557,7 @@ export function fuseResultsDetailed(
     };
   });
 
-  return { results, laneYield };
+  return { results, laneYield, relaxed };
 }
 
 /** The ranked list alone, for callers that do not need the per-lane yield. */

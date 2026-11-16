@@ -27,7 +27,7 @@ npm run smoke -- --live  # + read-only probes against the live Supabase project 
 
 Rules a change has to respect:
 
-- **Green means every check that ran passed, 0 failed** — 17 on a full install (13 that always run,
+- **Green means every check that ran passed, 0 failed** — 21 on a full install (17 that always run,
   plus 4 database checks). The script exits non-zero if anything fails; do not merge on a red run,
   and do not treat a red run as "probably the environment" without reading the log. Failing checks
   print the last 20 lines of their output.
@@ -78,10 +78,21 @@ must be read-only.
 Ranking is the part most likely to regress invisibly, so it has its own gate inside smoke:
 
 ```bash
-node experiments/ranking-harness.mjs --check     # fails on nDCG regression vs flat trust
+node experiments/ranking-harness.mjs --check     # fails on nDCG or margin regression vs flat trust
+node experiments/ranking-harness.mjs --compare spec.json   # score your own before/after weights
 node experiments/ranking-sweep.mjs --ablate      # what each constant buys
 node experiments/ranking-sweep.mjs --stability    # leave-one-out across queries
 ```
+
+`--compare` is the harness for a weight change you are about to make. A spec is
+`{ "before": config, "after": config }` where a config is `{ "label", "weights", "recency" }` and
+`weights` is `"flat"` (pre-intent table, keyword routing only), `"intent"` (engine character as
+fusion applies it) or an explicit `{ engine: number }` map; omit `recency` to keep fusion's default.
+It prints the same nDCG/MRR/margin table with your labels in the header, and the
+`fresh-tie`/`semantic-tie` discrimination gate is skipped, because a spec is allowed to move nothing.
+`experiments/fixtures/weight-experiment.example.json` is a working starting point, and
+`experiments/ranking-compare.test.mjs` keeps the mode honest: the named modes must reproduce the
+default pair exactly, identical configs must score identically, and a bad spec must exit 2.
 
 The fixture in `experiments/fixtures/ranking-queries.json` is **contested on purpose**: each query
 pairs two results with near-identical term coverage, so only engine trust or a publication date can
@@ -90,8 +101,23 @@ at least one control query where the answer must not move, and record the ration
 `contested` field. A query set whose every top hit is on-topic scores the same under any weighting
 and silently measures nothing.
 
+The sharpest queries are the ones tagged `"tie": "recency"` or `"tie": "intent"` (classes
+`fresh-tie` and `semantic-tie`). Their on-topic pair is *exactly* equal on IDF-weighted coverage, so
+relevance cannot order them: in a recency tie the stale result is placed at a better rank, and in an
+intent tie the keyword engine's result holds the higher flat trust. Only freshness or intent
+weighting can move them, which means an unchanged score there is a real finding rather than noise.
+
+Three audits enforce that instead of trusting the prose: `--check` fails when a tie pair's coverage
+differs, when its titles are close enough to merge into one entity (measured, 0.6 Jaccard), or when a
+`*-tie` class stops improving by at least 0.05 nDCG. `termCoverage` is exported from `fusion.ts` for
+exactly this, so the fixture cannot quietly stop being contested.
+
 Report `margin` alongside nDCG: it is the order-free gap between the best and the best lesser
-result, so it moves when a weighting widens a lead without changing which result is first. State the
+result, so it moves when a weighting widens a lead without changing which result is first. `--check`
+gates it as well as nDCG — an overall mean margin down by more than 0.02, or a class mean down by
+more than 0.05, fails — because a lead that shrinks is the leading edge of the next reorder, which
+order metrics cannot see. Every query whose margin narrowed by 0.05 or more is listed under the
+overall block, so a cause is visible even when the mean holds. State the
 measured effect of a constant in the commit body, and say plainly when a gain rests on a single
 query.
 

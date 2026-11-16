@@ -133,6 +133,34 @@ key_status() {
 # 4i. the composer shows which selected engines have a key before a search runs
 run "engine key status" key_status
 
+system_prompt() {
+  node experiments/system-prompt.test.mjs
+}
+
+# 4j. the answer contract the model is given: word budget, claim ledger, citations, follow-ups last
+run "system prompt" system_prompt
+
+empty_result() {
+  node experiments/empty-result.test.mjs
+}
+
+# 4k. a search that found nothing ends in its gaps rather than in prose
+run "empty result" empty_result
+
+prompt_variant() {
+  node experiments/prompt-variant.test.mjs
+}
+
+# 4l. the prompt can be swapped per account on this device, and blank means built-in
+run "prompt variant" prompt_variant
+
+ranking_compare() {
+  node experiments/ranking-compare.test.mjs
+}
+
+# 4m. the harness can score any two weight configurations on the fixed query set
+run "ranking compare" ranking_compare
+
 ranking_benchmark() {
   node experiments/ranking-harness.mjs --check
 }

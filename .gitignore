@@ -17,3 +17,6 @@ artifacts/
 
 # Supabase CLI cache
 supabase/.temp/
+
+# a foreign patch: its fieldwork-search/ paths are not part of this repository
+/patches/xortron-all-models.patch

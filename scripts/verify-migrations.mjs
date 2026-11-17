@@ -43,6 +43,7 @@ const COLUMNS = [
   ['messages', 'user_id'],
   ['messages', 'conversation_id'],
   ['messages', 'system_prompt'],
+  ['messages', 'tool_searches'],
   ['sources', 'user_id'],
   ['findings', 'user_id'],
   ['activity_logs', 'user_id'],

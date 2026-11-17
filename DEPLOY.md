@@ -29,6 +29,8 @@ Project ref: **`mhfsggpnnjyxsnshqatf`** (hardcoded in `scripts/import-keys.mjs`;
 | `20261115140000_add_user_auth_rls.sql` | present | **not applied** |
 | `20261115150000_add_request_rate_limits.sql` | present | **not applied** |
 | `20261115160000_user_engine_keys.sql` | present | **not applied** |
+| `20261116170000_add_message_system_prompt.sql` | present | **not applied** (answers save without it, see below) |
+| `20261117120000_add_message_tool_searches.sql` | present | **not applied** (the model's own queries are session-only until it runs) |
 | `llm-proxy` | rate limiting, session-scoped keys | **stale** |
 | `web-search` | `engine_status`, per-user keys, `key_fallback`, the `GET` configuration probe | **stale** |
 
@@ -95,12 +97,24 @@ the repo.
 
 ## 3. Apply the migrations
 
+One command, once the token is in the shell:
+
 ```bash
 export SUPABASE_ACCESS_TOKEN=...          # shell env only; never a file in this repo
-supabase link --project-ref mhfsggpnnjyxsnshqatf
-supabase db push --dry-run                # lists exactly what will run
-supabase db push
+npm run migrations:plan                  # dry run: what would be applied
+npm run migrations:apply                 # replay locally, push, then verify the hosted schema
 ```
+
+`npm run migrations:check` needs no token: it probes the hosted project for the objects the pending
+migrations add and names the ones that are missing.
+
+Under it, `scripts/apply-migrations.mjs` replays the whole set into PGlite first, then runs
+`npx --yes supabase@2.39.2 migration list` and `db push --use-api` (no Docker on this machine), and
+finishes by re-probing the hosted schema. The old direct commands still work if you prefer them:
+`supabase link --project-ref mhfsggpnnjyxsnshqatf` then `supabase db push --dry-run` / `supabase db push`.
+
+Until `…16170000` runs, the app saves assistant rows **without** `system_prompt`: the answer
+survives, the recorded prompt does not, and the activity trail says so once per session.
 
 `db push` runs each file in filename order. Each file opens with `BEGIN` and ends with `COMMIT`, so
 a failure rolls that migration back rather than leaving it half-applied — which is also why a
@@ -289,7 +303,7 @@ belong to a different project than the one just deployed.
 ```text
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
-[ ] npm run smoke green (34 checks, 0 failed, no skips)
+[ ] npm run smoke green (36 checks, 0 failed, no skips)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

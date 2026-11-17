@@ -104,6 +104,30 @@ const toolStream = () =>
   check('the tool message answers the call it belongs to', toolMessages[0].tool_call_id === 'c1', toolMessages[0].tool_call_id);
 }
 
+// ── 3b. a call the model sent without an id still gets a matching answer ───
+{
+  let first = true;
+  const run = await runSearchToolLoop({
+    messages: [{ role: 'user', content: 'q' }],
+    tools: [SEARCH_TOOL],
+    stream: async () => {
+      if (first) {
+        first = false;
+        return { ok: true, content: '', toolCalls: [{ name: 'search_web', arguments: '{"query":"no id"}' }] };
+      }
+      return { ok: true, content: 'answered', toolCalls: [] };
+    },
+    runSearch: async () => ({ count: 1, text: 'found' }),
+  });
+  const assistant = run.transcript.find((message) => message.tool_calls?.length);
+  const tool = run.transcript.find((message) => message.role === 'tool');
+  check(
+    'an id invented for a call is the id its tool message answers',
+    Boolean(assistant?.tool_calls?.[0]?.id) && assistant?.tool_calls?.[0]?.id === tool?.tool_call_id,
+    `${assistant?.tool_calls?.[0]?.id} vs ${tool?.tool_call_id}`,
+  );
+}
+
 // ── 4. the budget: it cannot search forever ─────────────────────────────────
 {
   let searches = 0;

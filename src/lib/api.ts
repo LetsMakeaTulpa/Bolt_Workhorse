@@ -371,7 +371,7 @@ async function streamAttempt(
   // one warning per attempt: every chunk repeats the model, and a per-chunk warning is noise
   let servedWarned = false;
   // tool calls arrive as deltas keyed by index: the name and id come once, the arguments in pieces
-  const pendingCalls = new Map();
+  const pendingCalls = new Map<number, { id: string; name: string; arguments: string }>();
   try {
     const resp = await fetch(`${SUPABASE_URL}/functions/v1/llm-proxy/chat`, {
       method: 'POST',

@@ -24,6 +24,8 @@ export interface Message {
    * produced it. Null on rows written before it was recorded — unknown, not "built-in".
    */
   system_prompt?: string | null;
+  /** extra searches the model ran on its own during this turn, oldest first */
+  tool_searches?: string[];
 }
 
 export interface Source {

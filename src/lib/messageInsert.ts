@@ -32,6 +32,22 @@ export function missingColumnFrom(error: unknown, table = 'messages'): string | 
 }
 
 /**
+ * Columns this session already learned the database does not have.
+ *
+ * Without this, every single answer pays a guaranteed 400 before the retry — the row saves, but the
+ * console shows a failed request for every message and looks like the save is still broken. Learnt
+ * per session with an expiry, so applying the migration and reloading picks the column back up.
+ */
+const learnt = new Map<string, number>();
+const RELEARN_AFTER_MS = 10 * 60 * 1000;
+const keyFor = (table: string, column: string) => `${table}.${column}`;
+
+/** Forget what earlier inserts learnt (tests, and a manual retry after applying a migration). */
+export function resetLearntColumns(): void {
+  learnt.clear();
+}
+
+/**
  * Insert one row into a table, retrying without any column the server reports as missing.
  * Returns the saved row (when `select` is asked for) and the names of anything dropped.
  */
@@ -44,6 +60,14 @@ export async function insertRowTolerant<T>(
   const payload: Record<string, unknown> = { ...row };
   const dropped: string[] = [];
 
+  for (const column of Object.keys(payload)) {
+    const learntAt = learnt.get(keyFor(table, column));
+    if (learntAt && Date.now() - learntAt < RELEARN_AFTER_MS) {
+      delete payload[column];
+      dropped.push(column);
+    }
+  }
+
   for (let attempt = 0; attempt <= maxDrops; attempt += 1) {
     const query = client.from(table).insert(payload);
     const { data, error } = select
@@ -55,6 +79,7 @@ export async function insertRowTolerant<T>(
     if (!missing || !(missing in payload)) return { data: null, error, dropped };
     delete payload[missing];
     dropped.push(missing);
+    learnt.set(keyFor(table, missing), Date.now());
   }
 
   return { data: null, error: { message: `could not save the row: ${dropped.join(', ')} rejected` }, dropped };

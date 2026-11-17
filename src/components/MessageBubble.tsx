@@ -12,6 +12,10 @@ import { DORK_LANES } from '../lib/dorks';
 import { FIELDWORK_SYSTEM_PROMPT } from '../lib/systemPrompt';
 import { promptWordCount } from '../lib/promptVariant';
 import { describeUnverified, isUnverifiedAnswer } from '../lib/verification';
+import { checkGrounding } from '../lib/grounding';
+import { summarizeMachine } from '../lib/machineTrace';
+import { unansweredKind } from '../lib/turnDecision';
+import { blufOf } from '../lib/blufQuery';
 
 interface MessageBubbleProps {
   message: Message;
@@ -19,6 +23,8 @@ interface MessageBubbleProps {
   /** the user turn this answer belongs to, so retry re-runs the right query */
   query?: string;
   onRetrySearch?: (query: string) => void;
+  /** ask the same question again as a fresh turn, for a turn that ended without an answer */
+  onRetryTurn?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
   /** run one dork lane against a target, offered from a gap report */
@@ -34,12 +40,19 @@ function customPromptWords(stored?: string | null): number | null {
   return promptWordCount(stored);
 }
 
-export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSaveResults, onFollowUp, onRunLane }: MessageBubbleProps) {
+/** A marked sentence has to stay short enough to read in a strip this size. */
+function shorten(text: string, max = 160): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length > max ? `${clean.slice(0, max).trimEnd()}…` : clean;
+}
+
+export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRetryTurn, onSaveResults, onFollowUp, onRunLane }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [lanePickerOpen, setLanePickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'known'>('idle');
+  const [groundingOpen, setGroundingOpen] = useState(false);
 
   const results = message.search_results ?? [];
   const { body, followUps } = useMemo(
@@ -53,6 +66,39 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
     [isUser, body],
   );
   const promptWords = isUser ? null : customPromptWords(message.system_prompt);
+
+  // what the machine did for this answer: which pages were opened and read, and what the model
+  // searched on its own when the first pass was thin
+  const machine = useMemo(() => summarizeMachine(message), [message]);
+
+  // the answer's bottom line, as a query and as next questions. A post that ends with nothing to
+  // press is a dead end, and the model's own FOLLOW-UPS section arrives often enough to rely on but
+  // not often enough to trust alone.
+  const bluf = useMemo(
+    () => (isUser || isStreaming ? { lead: '', query: '', followUps: [] } : blufOf(prose)),
+    [isUser, isStreaming, prose],
+  );
+
+  // A turn can end with no answer at all: the search was stopped, a newer question replaced it, or
+  // the request failed. In every one of those the reader is left looking at a question with nothing
+  // usable under it, and until now the only way to try again was to type it out. The sources block
+  // that owns the Retry control never renders on these turns, because there are no sources.
+  const unanswered = useMemo(() => {
+    if (isUser || isStreaming || !query) return null;
+    const kind = unansweredKind(message.content);
+    if (kind) return kind;
+    return /^Error:/.test(message.content.trim()) ? ('failed' as const) : null;
+  }, [isUser, isStreaming, query, message.content]);
+
+  // the anti-fabrication promise applied to the answer itself: a citation ID must be one of this
+  // answer's sources, and the figures and names in a sentence must appear in the pages it cites
+  const grounding = useMemo(
+    () => (isUser || isStreaming ? null : checkGrounding(prose, message.search_results ?? [], query ?? '')),
+    [isUser, isStreaming, prose, message.search_results, query],
+  );
+
+  // the model's own questions are better than any frame around its lead, so they win when present
+  const nextQuestions = followUps.length > 0 ? followUps : bluf.followUps;
 
   const sourceText = () =>
     results
@@ -224,23 +270,158 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
           )}
         </div>
 
-        {!isUser && followUps.length > 0 && !isStreaming && (
-          <div className="flex w-full flex-wrap items-center gap-1.5 pt-0.5">
-            <span className="text-[10px] uppercase tracking-wider text-text-muted">Keep digging</span>
-            {followUps.map((question) => (
-              <button
-                key={question}
-                onClick={() => onFollowUp?.(question)}
-                disabled={!onFollowUp}
-                title={question}
-                className="group flex max-w-full items-center gap-1 rounded-full border border-border-subtle bg-bg-surface px-2.5 py-1 text-left text-[11px] text-text-secondary transition-colors hover:border-accent/30 hover:bg-bg-elevated hover:text-text-primary disabled:opacity-40"
-              >
-                <span className="truncate">{question}</span>
-                <ArrowUpRight size={10} className="flex-shrink-0 text-text-muted group-hover:text-accent" />
-              </button>
-            ))}
+        {unanswered && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => query && onRetryTurn?.(query)}
+              disabled={!onRetryTurn || !query}
+              title={
+                unanswered === 'superseded'
+                  ? `Ask this again — a newer question replaced it: “${shorten(query ?? '', 90)}”`
+                  : `Retry — search and answer “${shorten(query ?? '', 90)}” again`
+              }
+              className="flex items-center gap-1 rounded-md border border-accent/30 bg-accent-subtle px-2 py-1 text-[10px] text-accent transition-colors hover:bg-accent hover:text-bg-base disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <RotateCw size={10} />
+              Retry
+            </button>
+            <span className="text-[10px] text-text-muted">
+              Runs the question again, search and answer, as a fresh turn
+            </span>
           </div>
         )}
+
+        {!isUser && !isStreaming && machine.anything && (
+          <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
+            {machine.read.length > 0 && (
+              <span className="flex flex-wrap items-center gap-1">
+                <FileText size={10} className="flex-shrink-0" />
+                <span className="uppercase tracking-wider">Read in full</span>
+                {machine.read.map((source) => (
+                  <a
+                    key={source.url}
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`Page text read by ${source.via} and quoted from, rather than a snippet`}
+                    className="flex max-w-[16rem] items-center gap-1 rounded-full border border-border-subtle bg-bg-surface px-2 py-0.5 text-text-secondary transition-colors hover:border-accent/30 hover:text-text-primary"
+                  >
+                    <span className="font-mono text-text-muted">{source.citation}</span>
+                    <span className="truncate">{source.title}</span>
+                    <ExternalLink size={8} className="flex-shrink-0" />
+                  </a>
+                ))}
+              </span>
+            )}
+            {machine.extraSearches.length > 0 && (
+              <span className="flex flex-wrap items-center gap-1">
+                <Search size={10} className="flex-shrink-0" />
+                <span className="uppercase tracking-wider">Searched again</span>
+                {machine.extraSearches.map((query) => (
+                  <button
+                    key={query}
+                    type="button"
+                    onClick={() => onRetrySearch?.(query)}
+                    disabled={!onRetrySearch}
+                    title={`Run this search again: ${query}`}
+                    className="flex max-w-[16rem] items-center gap-1 rounded-full border border-border-subtle bg-bg-surface px-2 py-0.5 text-text-secondary transition-colors hover:border-accent/30 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span className="truncate">{query}</span>
+                    <RotateCw size={8} className="flex-shrink-0" />
+                  </button>
+                ))}
+              </span>
+            )}
+          </div>
+        )}
+
+        {grounding && grounding.checked > 0 && (
+          <div
+            className={`w-full rounded-lg border px-2.5 py-1.5 text-[10px] ${
+              grounding.flagged.length > 0
+                ? 'border-warning/30 bg-warning-subtle'
+                : 'border-border-subtle bg-bg-surface'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => setGroundingOpen((open) => !open)}
+              aria-expanded={groundingOpen}
+              title="Every citation must exist, and every figure or name in a sentence must appear in the page that sentence cites"
+              className="flex w-full items-center gap-1.5 text-left"
+            >
+              <ShieldAlert
+                size={10}
+                className={`flex-shrink-0 ${grounding.flagged.length > 0 ? 'text-warning' : 'text-text-muted'}`}
+              />
+              <span className={`flex-1 ${grounding.flagged.length > 0 ? 'text-warning' : 'text-text-secondary'}`}>
+                Grounding: {grounding.summary}
+              </span>
+              <ChevronDown
+                size={10}
+                className={`flex-shrink-0 text-text-muted transition-transform ${groundingOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {groundingOpen && (
+              <ul className="mt-1.5 space-y-1 border-t border-border-subtle pt-1.5">
+                {grounding.flagged.map((sentence, index) => (
+                  <li key={`${index}-${sentence.text}`} className="text-text-secondary">
+                    <span className="text-warning">
+                      {sentence.status === 'unknown-citation' ? 'Citation that does not exist' : 'Not in the cited page'}:
+                    </span>{' '}
+                    <span className="italic">“{shorten(sentence.text)}”</span>
+                    {sentence.missing.length > 0 && (
+                      <span className="text-text-muted"> — missing {sentence.missing.join(', ')}</span>
+                    )}
+                  </li>
+                ))}
+                {grounding.unchecked.map((sentence, index) => (
+                  <li key={`unchecked-${index}-${sentence.text}`} className="text-text-muted">
+                    Could not check — the cited source came back as a snippet, not a page:{' '}
+                    <span className="italic">“{shorten(sentence.text)}”</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {!isUser &&
+          !isStreaming &&
+          !unanswered &&
+          !isGapReport(message.content) &&
+          (bluf.query !== '' || nextQuestions.length > 0) && (
+            <div className="flex w-full flex-wrap items-center gap-1.5 pt-0.5">
+              <span className="text-[10px] uppercase tracking-wider text-text-muted">Keep digging</span>
+              {/* the bottom line as a query, so the lead can be searched without retyping it */}
+              {bluf.query !== '' && (
+                <button
+                  type="button"
+                  onClick={() => onRetrySearch?.(bluf.query)}
+                  disabled={!onRetrySearch}
+                  title={`The bottom line of this answer as a query — runs it across the selected engines: ${bluf.query}`}
+                  className="flex max-w-full items-center gap-1 rounded-full border border-accent/30 bg-accent-subtle px-2.5 py-1 text-left text-[11px] text-accent transition-colors hover:bg-accent hover:text-bg-base disabled:opacity-40"
+                >
+                  <Search size={10} className="flex-shrink-0" />
+                  <span className="truncate">{bluf.query}</span>
+                </button>
+              )}
+              {nextQuestions.map((question) => (
+                <button
+                  key={question}
+                  onClick={() => onFollowUp?.(question)}
+                  disabled={!onFollowUp}
+                  title={question}
+                  className="group flex max-w-full items-center gap-1 rounded-full border border-border-subtle bg-bg-surface px-2.5 py-1 text-left text-[11px] text-text-secondary transition-colors hover:border-accent/30 hover:bg-bg-elevated hover:text-text-primary disabled:opacity-40"
+                >
+                  <span className="truncate">{question}</span>
+                  <ArrowUpRight size={10} className="flex-shrink-0 text-text-muted group-hover:text-accent" />
+                </button>
+              ))}
+            </div>
+          )}
 
         {!isUser && message.model && message.content && (
           <div className="flex items-center gap-1.5 text-[10px] text-text-muted">

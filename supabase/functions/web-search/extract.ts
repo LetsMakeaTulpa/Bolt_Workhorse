@@ -57,6 +57,11 @@ export const DEFAULT_TIMEOUT_MS = 8000;
  * of figures or a one-paragraph abstract is a real page, and paying Firecrawl for it would be waste.
  */
 const THIN_PAGE_CHARS = 120;
+/**
+ * A page declaring more than this is skipped rather than read: the text is capped after decoding, so
+ * an unnoticed 100 MB body would cost the function its memory to produce 6,000 characters.
+ */
+const MAX_PAGE_BYTES = 2_000_000;
 
 const ENTITIES: Record<string, string> = {
   amp: '&',
@@ -141,12 +146,15 @@ export function capText(text: string, maxChars = DEFAULT_MAX_CHARS): string {
 /** Page text from a fetched document, preferring the article body when there is one. */
 export function extractFromHtml(html: string, maxChars = DEFAULT_MAX_CHARS): string {
   const whole = htmlToText(html);
-  const body = html.match(/<(?:article|main)\b[^>]*>([\s\S]*?)<\/(?:article|main)>/i)?.[1];
-  if (body) {
-    const inner = htmlToText(body);
-    if (inner.length >= 400 && inner.length < whole.length) return capText(inner, maxChars);
+  // Each body is closed by the tag that opened it: matching any </article> or </main> against any
+  // opening would end a <main> at its first nested </article> and cut the page off mid-body, so the
+  // longest readable candidate wins.
+  let best = '';
+  for (const match of html.matchAll(/<(article|main)\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
+    const inner = htmlToText(match[2]);
+    if (inner.length >= 400 && inner.length < whole.length && inner.length > best.length) best = inner;
   }
-  return capText(whole, maxChars);
+  return capText(best || whole, maxChars);
 }
 
 /** Pages that can be fetched by a plain GET: http(s) only, no onion services or local addresses. */
@@ -242,6 +250,8 @@ export async function fetchPageText(url: string, deps: ExtractionDeps = {}): Pro
     if (type.includes('pdf') || type.startsWith('image/') || type.includes('octet-stream')) {
       throw new Error(`unreadable content type ${type.split(';')[0]}`);
     }
+    const declared = Number(resp.headers.get('content-length') ?? 0);
+    if (declared > MAX_PAGE_BYTES) throw new Error(`page too large (${declared} bytes)`);
     const body = await resp.text();
     const text = type.includes('html') || /<html|<body|<p\b/i.test(body)
       ? extractFromHtml(body, maxChars)

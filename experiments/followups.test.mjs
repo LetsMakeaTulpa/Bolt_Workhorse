@@ -9,6 +9,12 @@ execFileSync(process.execPath, [ESBUILD, 'src/lib/followUps.ts', '--bundle', '--
 });
 const { splitFollowUps } = await import(`${asUrl(OUT)}?t=${Date.now()}`);
 
+const BLUF = tmpPath('fieldwork-bluf.mjs');
+execFileSync(process.execPath, [ESBUILD, 'src/lib/blufQuery.ts', '--bundle', '--format=esm', `--outfile=${BLUF}`, '--log-level=error'], {
+  stdio: 'inherit',
+});
+const { blufOf, blufTerms } = await import(`${asUrl(BLUF)}?t=${Date.now()}`);
+
 let passed = 0;
 const failures = [];
 
@@ -65,6 +71,49 @@ check('ignores blank lines after the bullets', trailing.followUps.length === 3, 
 // 9. an empty answer must not throw
 const empty = splitFollowUps('');
 check('handles an empty answer', empty.body === '' && empty.followUps.length === 0);
+
+// ── 10. the bottom line, as the query a post can offer ──────────────────────────────────────
+const lede = blufOf(
+  '**Surface code thresholds above 1% error are the binding constraint [1][2].** A second source disagrees about the margin [3].\n\nDetail that is not the bottom line: the 2025 roadmap slipped.',
+);
+check('bluf: markdown and citations are stripped', lede.lead.startsWith('Surface code thresholds above 1% error') && !/\[\d/.test(lede.lead), lede.lead);
+check('bluf: the detail section is not the bottom line', !/roadmap slipped/.test(lede.lead), lede.lead);
+check('bluf: at most three sentences', (lede.lead.match(/[.!?]/g) ?? []).length <= 3, lede.lead);
+check('bluf: the query is the lead’s own terms, in order', lede.query.startsWith('surface code thresholds'), lede.query);
+check('bluf: numbers survive', /1%/.test(lede.query), lede.query);
+check(
+  'bluf: stopwords and answer vocabulary are gone',
+  !/\b(?:the|above|are|source|sources|disagrees|detail)\b/.test(lede.query),
+  lede.query,
+);
+check('bluf: the query is plain — no operators, no quotes', !/[:"“”]|\bsite:/.test(lede.query), lede.query);
+check('bluf: terms are capped so the query stays a query', blufTerms(lede.lead).length <= 8, String(blufTerms(lede.lead).length));
+
+// a link contributes its words, never its URL
+const linked = blufOf('See [the 2025 roadmap](https://example.org/private/roadmap.pdf). It slipped again.');
+check('bluf: a link leaves its text, not its address', /2025 roadmap/.test(linked.lead) && !/https?:|example\.org/.test(linked.query), linked.query);
+
+// an answer made entirely of answer vocabulary has no query in it, and says so instead of guessing
+const metaOnly = blufOf('The sources agree on one point. The evidence suggests it is important.');
+check('bluf: nothing distinctive means no query', metaOnly.query === '', metaOnly.query);
+check('bluf: and therefore no invented questions', metaOnly.followUps.length === 0, String(metaOnly.followUps.length));
+check('bluf: an empty answer is handled', blufOf('').query === '' && blufOf('').followUps.length === 0);
+
+// ── 11. the questions a post ends with when the model wrote none ──
+check('bluf: three next questions', lede.followUps.length === 3, String(lede.followUps.length));
+check('bluf: each one is a question', lede.followUps.every((q) => q.trim().endsWith('?')), lede.followUps.join(' | '));
+check('bluf: each one is searchable as written', lede.followUps.every((q) => q.length <= 200 && q.split(/\s+/).length >= 4));
+check('bluf: each one carries the lead’s subject', lede.followUps.every((q) => /surface code/.test(q)), lede.followUps.join(' | '));
+check('bluf: the questions differ', new Set(lede.followUps).size === 3);
+
+// the frames are fixed, so a derived question cannot introduce a fact the answer never carried
+const frame = new Set('what is the strongest primary source on evidence contradicts changed about in past year'.split(' '));
+const subject = new Set(blufTerms(lede.lead));
+check(
+  'bluf: a derived question adds no words of its own',
+  lede.followUps.every((q) => q.toLowerCase().match(/[a-z0-9%]+/g).every((word) => frame.has(word) || subject.has(word))),
+  lede.followUps.join(' | '),
+);
 
 console.log(`\n${passed}/${passed + failures.length} assertions passed`);
 if (failures.length > 0) {

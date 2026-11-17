@@ -24,7 +24,7 @@ import { PresetSelector } from './components/PresetSelector';
 import { AuthScreen } from './components/AuthScreen';
 import type { Session } from '@supabase/supabase-js';
 import { Menu, Settings, Search, Compass, PanelRightClose, PanelRight, Activity, Globe, Shield, Radar, LogOut, Loader2 } from 'lucide-react';
-import { decideAfterSearch, STOPPED_SEARCH_NOTE } from './lib/turnDecision';
+import { decideAfterSearch, STOPPED_SEARCH_NOTE, SUPERSEDED_SEARCH_NOTE } from './lib/turnDecision';
 import { insertRowTolerant, noteDroppedColumns } from './lib/messageInsert';
 
 const DEFAULT_MODEL = 'xortron/RESTRICTED-RESEARCH-MODEL';
@@ -332,24 +332,32 @@ export default function App() {
     if (shouldSearch) {
       searchResultsData = await performSearch(content, conv.id);
       // A stopped or replaced search used to end the turn right here, with nothing under the
-      // question: that reads as the app not answering at all. Decide explicitly instead — answer
-      // from the model, say it was stopped, or (only when a newer question owns the screen) step
-      // aside without a word.
+      // question: that reads as the app not answering at all, and it is what left people asking
+      // whether the app had broken. Decide explicitly instead, and every outcome is visible:
+      // answer from the model, or leave a line that says why there is no answer.
       const afterSearch = decideAfterSearch({
         aborted: runAborted(),
         cancelled: runCancelled(),
         superseded: turnSuperseded(),
       });
-      if (afterSearch === 'silent') return;
-      if (afterSearch === 'stopped-note') {
-        await logActivity(conv.id, 'search', 'Search stopped before it returned a source', {}, 'completed');
+      if (afterSearch !== 'answer') {
+        const replaced = afterSearch === 'superseded-note';
+        await logActivity(
+          conv.id,
+          'search',
+          replaced
+            ? 'Search replaced by a newer question — this turn was not answered'
+            : 'Search stopped before it returned a source',
+          { superseded: replaced },
+          'completed',
+        );
         setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             conversation_id: conv.id,
             role: 'assistant',
-            content: STOPPED_SEARCH_NOTE,
+            content: replaced ? SUPERSEDED_SEARCH_NOTE : STOPPED_SEARCH_NOTE,
             model: selectedModel,
             search_enabled: searchEnabled,
             search_results: [],
@@ -417,6 +425,8 @@ export default function App() {
     setStreamingContent('');
 
     let fullContent = '';
+    // the model's own searches, so the transcript can show them and offer each query back
+    let toolSearches: string[] = [];
     const assistantMsgId = crypto.randomUUID();
     const assistantMsg: Message = {
       id: assistantMsgId,
@@ -426,6 +436,7 @@ export default function App() {
       model: selectedModel,
       search_enabled: searchEnabled,
       search_results: searchResultsData,
+      tool_searches: toolSearches,
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, assistantMsg]);
@@ -473,7 +484,7 @@ export default function App() {
         const { data: savedMsg, dropped } = await insertRowTolerant<Message>(supabase, 'messages', {
           conversation_id: conv!.id, role: 'assistant', content: finalContent,
           model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
-          system_prompt: activePrompt,
+          system_prompt: activePrompt, tool_searches: toolSearches,
         });
         await noteDroppedColumns(dropped, async (message, detail) => {
           await logActivity(conv!.id, 'analyze', message, detail, 'completed');
@@ -521,7 +532,7 @@ export default function App() {
           const { dropped: stoppedDropped } = await insertRowTolerant<Message>(supabase, 'messages', {
             conversation_id: conv!.id, role: 'assistant', content: stopped,
             model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
-            system_prompt: activePrompt,
+            system_prompt: activePrompt, tool_searches: toolSearches,
           });
           await noteDroppedColumns(stoppedDropped, async (message, detail) => {
             await logActivity(conv!.id, 'analyze', message, detail, 'completed');
@@ -552,6 +563,9 @@ export default function App() {
       tools: searchEnabled ? [SEARCH_TOOL] : [],
       maxSearches: 2,
       onSearch: (query) => {
+        toolSearches = [...toolSearches, query];
+        // the bubble owns the list while the answer streams, so the strip appears as it happens
+        setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, tool_searches: toolSearches } : m)));
         void logActivity(conv!.id, 'search', `Model searched again: "${query}"`, { query, tool: 'search_web' }, 'completed');
       },
       stream: (turnMessages, turnTools) =>
@@ -795,6 +809,7 @@ export default function App() {
               useDorks={useDorks}
               onUseDorksChange={setUseDorks}
               onRetrySearch={handleRetrySearch}
+              onRetryTurn={handleSendMessage}
               onSaveResults={handleSaveResults}
               onFollowUp={handleSendMessage}
               modelNotice={modelNotice}

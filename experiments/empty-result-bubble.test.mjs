@@ -20,6 +20,7 @@ const load = async (file) => import(`${pathToFileURL(absolute(file)).href}?t=${D
 
 const BUBBLE = process.env.BUBBLE_MODULE ?? 'node_modules/.cache/fieldwork/message-bubble.mjs';
 const EMPTY = process.env.EMPTY_MODULE ?? 'node_modules/.cache/fieldwork/empty-result.mjs';
+const TURN = process.env.TURN_DECISION_MODULE ?? 'node_modules/.cache/fieldwork/turn-decision.mjs';
 if (!process.env.BUBBLE_MODULE) {
   mkdirSync('node_modules/.cache/fieldwork', { recursive: true });
   // react-markdown's entity decoder resolves to its DOM build for the browser, and that build calls
@@ -31,10 +32,12 @@ if (!process.env.BUBBLE_MODULE) {
     '--alias:decode-named-character-reference=./node_modules/decode-named-character-reference/index.js',
   ]);
   bundle('src/lib/emptyResult.ts', EMPTY);
+  bundle('src/lib/turnDecision.ts', TURN);
 }
 
 const { MessageBubble } = await load(BUBBLE);
 const { buildGapReport } = await load(EMPTY);
+const { STOPPED_SEARCH_NOTE, SUPERSEDED_SEARCH_NOTE } = await load(TURN);
 const React = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
 
@@ -114,6 +117,86 @@ check('render: no query, no buttons', !/Broader:/.test(orphan) && !/Run a lane/.
 // 7. streaming: buttons arrive with the finish, not mid-token
 const streaming = render({ message: message(failed), query: 'investor deck', isStreaming: true, onRetrySearch: () => {}, onRunLane: () => {} });
 check('render: still streaming, the buttons wait', !/Broader:/.test(streaming), 'gapless while streaming');
+
+// 8. a turn that ended with no answer still offers the button that was missing: every one of
+//    these used to leave the question on screen with no source block, and the source block was the
+//    only place Retry lived, so the reader had to retype the question
+const asked = [];
+const retryTurn = (q) => asked.push(q);
+// the retry button is the one carrying a retry title, so an unrelated disabled control cannot
+// make an enabled retry look disabled
+const retryControl = (html) => html.match(/<button[^>]*title="(?:Retry|Ask this again)[^"]*"[^>]*>/)?.[0] ?? '';
+// the attribute, not Tailwind's `disabled:` class on the same tag
+const isDisabled = (tag) => / disabled(?:=""|[\s>])/.test(tag);
+
+const stopped = render({ message: message(STOPPED_SEARCH_NOTE), query: 'investor deck', onRetryTurn: retryTurn });
+check('render: a stopped search offers Retry', retryControl(stopped) !== '', stopped.slice(0, 120));
+check('render: the stopped retry is enabled when it can act', retryControl(stopped) !== '' && !isDisabled(retryControl(stopped)), retryControl(stopped));
+check('render: the stopped retry says what it will do', /Runs the question again, search and answer, as a fresh turn/.test(stopped));
+check('render: the stopped retry names the question it re-runs', /Retry — search and answer “investor deck” again/.test(stopped));
+
+const replaced = render({ message: message(SUPERSEDED_SEARCH_NOTE), query: 'graph neural network survey', onRetryTurn: retryTurn });
+check('render: a superseded turn offers Retry', retryControl(replaced) !== '');
+check('render: the superseded retry says why it is there', /Ask this again — a newer question replaced it/.test(replaced));
+
+const errored = render({ message: message('Error: the request failed'), query: 'anything', onRetryTurn: retryTurn });
+check('render: a failed turn offers Retry', retryControl(errored) !== '');
+
+check('render: an ordinary answer gets no turn retry', retryControl(answer) === '');
+check('render: a source-backed answer keeps its own Retry, not a second one', retryControl(sourced) === '');
+check('render: no query means nothing to re-run', retryControl(render({ message: message(STOPPED_SEARCH_NOTE), onRetryTurn: retryTurn })) === '');
+check(
+  'render: still streaming, no retry under a half-written answer',
+  retryControl(render({ message: message(STOPPED_SEARCH_NOTE), query: 'investor deck', isStreaming: true, onRetryTurn: retryTurn })) === '',
+);
+check(
+  'render: without a handler the retry is shown disabled, not hidden',
+  isDisabled(retryControl(render({ message: message(STOPPED_SEARCH_NOTE), query: 'investor deck' }))),
+);
+
+// 9. every real answer ends in something to press: its bottom line as a query, and follow-up
+//    questions even when the model left its FOLLOW-UPS section out
+const blufAnswer = 'Surface code thresholds above 1% error rates are the binding constraint [1].';
+const withBluf = render({
+  message: message(blufAnswer),
+  query: 'how do surface codes scale?',
+  onRetrySearch: () => {},
+  onFollowUp: () => {},
+});
+check('render: the bottom line becomes a query chip', /surface code thresholds/.test(withBluf));
+check('render: the chip says the query came from the bottom line', /The bottom line of this answer as a query/.test(withBluf));
+check('render: the query chip is unquoted, so it is a query and not prose', /<span class="truncate">surface code thresholds/.test(withBluf));
+check(
+  'render: follow-up questions appear even without a FOLLOW-UPS section',
+  /What is the strongest primary source on surface code/.test(withBluf) && /What evidence contradicts/.test(withBluf),
+);
+check('render: the derived chips are questions, not statements', /What changed about surface code[^<]*\?/.test(withBluf));
+check('render: the post is still labelled as a place to keep digging', /Keep digging/.test(withBluf));
+
+const ownQuestions = render({
+  message: message(`${blufAnswer}\n\nFOLLOW-UPS\n- Who funds the error-correction roadmap?\n- Which vendor ships logical qubits?`),
+  query: 'how do surface codes scale?',
+  onRetrySearch: () => {},
+  onFollowUp: () => {},
+});
+check(
+  'render: the model’s own questions win over derived ones',
+  /Who funds the error-correction roadmap\?/.test(ownQuestions) && !/strongest primary source/.test(ownQuestions),
+);
+check(
+  'render: a gap report keeps its own next moves',
+  !/strongest primary source/.test(gap) && !/The bottom line of this answer/.test(gap),
+);
+check(
+  'render: an unanswered turn gets Retry, not derived questions',
+  !/strongest primary source/.test(stopped) && !/The bottom line of this answer/.test(stopped),
+);
+check(
+  'render: mid-stream there is no bottom line to search yet',
+  !/The bottom line of this answer/.test(
+    render({ message: message(blufAnswer), query: 'q', isStreaming: true, onRetrySearch: () => {}, onFollowUp: () => {} }),
+  ),
+);
 
 const failures = results.filter((row) => !row.ok);
 console.log(`\n${results.length - failures.length}/${results.length} assertions passed`);

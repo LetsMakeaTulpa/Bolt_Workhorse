@@ -13,7 +13,10 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "engines:verify": "node scripts/verify-engines.mjs",
-    "migrations:verify": "node scripts/verify-migrations.mjs"
+    "migrations:verify": "node scripts/verify-migrations.mjs",
+    "migrations:check": "node scripts/apply-migrations.mjs --check",
+    "migrations:plan": "node scripts/apply-migrations.mjs --plan",
+    "migrations:apply": "node scripts/apply-migrations.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

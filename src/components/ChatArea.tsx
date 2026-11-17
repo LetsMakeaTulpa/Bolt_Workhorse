@@ -46,6 +46,8 @@ interface ChatAreaProps {
   keysUnavailable?: boolean;
   onOpenSettings?: () => void;
   onRetrySearch?: (query: string) => void;
+  /** re-ask a question whose turn ended without an answer */
+  onRetryTurn?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
   /** what answered, when it was not the selected model — shown above the transcript, not only logged */
@@ -80,6 +82,7 @@ export function ChatArea({
   keysUnavailable,
   onOpenSettings,
   onRetrySearch,
+  onRetryTurn,
   onSaveResults,
   onFollowUp,
   modelNotice,
@@ -102,6 +105,7 @@ export function ChatArea({
                   query={asked?.content}
                   isStreaming={isStreaming && msg.id === messages[messages.length - 1]?.id && msg.role === 'assistant'}
                   onRetrySearch={onRetrySearch}
+                  onRetryTurn={onRetryTurn}
                   onSaveResults={onSaveResults}
                   onFollowUp={onFollowUp}
                   onRunLane={onRunLane}

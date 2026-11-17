@@ -55,6 +55,7 @@ export interface SearchToolRun {
   searches: string[];
   stoppedBy: 'done' | 'limit' | 'aborted' | 'error';
   error?: string;
+  /** every turn as the provider saw it, which is how the call/tool pairing is asserted */
   transcript: ToolMessage[];
 }
 
@@ -69,8 +70,9 @@ export function queryFromToolCall(args: string): string {
   } catch {
     // a model that wrote a bare query instead of JSON is still asking for that search
   }
-  // only fall back to the raw text when it is a sentence, not half a JSON object
-  return raw.startsWith('{') ? '' : raw.slice(0, 300);
+  // only fall back to the raw text when it is a sentence, not half a JSON object or a quoted string
+  const bare = raw.replace(/^["']+|["']+$/g, '').trim();
+  return bare.startsWith('{') || bare.startsWith('[') ? '' : bare.slice(0, 300);
 }
 
 const asProviderCall = (call: ToolCall) => ({
@@ -109,21 +111,21 @@ export async function runSearchToolLoop({
       return { content: turn.content, searches, stoppedBy: 'done', transcript };
     }
 
-    // the turn that asked is part of the conversation: every tool answer must follow its call
-    transcript.push({
-      role: 'assistant',
-      content: turn.content,
-      tool_calls: turn.toolCalls.map(asProviderCall),
-    });
+    // The turn that asked is part of the conversation, and its tool answers must carry the same call
+    // id it used. Building the provider calls once means a model that omitted ids still gets a tool
+    // message that answers the id in the assistant turn, instead of a second invented one.
+    const calls = turn.toolCalls.map(asProviderCall);
+    transcript.push({ role: 'assistant', content: turn.content, tool_calls: calls });
 
-    for (const call of turn.toolCalls) {
-      const callId = call.id || `call_${searches.length}`;
-      if (call.name !== 'search_web') {
+    for (const call of calls) {
+      const callId = call.id;
+      const name = call.function.name;
+      if (name !== 'search_web') {
         transcript.push({
           role: 'tool',
           tool_call_id: callId,
-          name: call.name,
-          content: `No tool named ${call.name}. The only tool is search_web.`,
+          name,
+          content: `No tool named ${name}. The only tool is search_web.`,
         });
         continue;
       }
@@ -136,7 +138,7 @@ export async function runSearchToolLoop({
         });
         continue;
       }
-      const query = queryFromToolCall(call.arguments);
+      const query = queryFromToolCall(call.function.arguments);
       if (!query) {
         transcript.push({
           role: 'tool',

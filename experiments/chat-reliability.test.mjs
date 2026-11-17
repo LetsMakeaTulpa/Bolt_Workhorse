@@ -8,8 +8,8 @@ const INSERT = process.env.MESSAGE_INSERT_MODULE ?? tmpPath('message-insert.mjs'
 if (!process.env.TURN_DECISION_MODULE) bundle('src/lib/turnDecision.ts', TURN);
 if (!process.env.MESSAGE_INSERT_MODULE) bundle('src/lib/messageInsert.ts', INSERT);
 
-const { decideAfterSearch, STOPPED_SEARCH_NOTE } = await import(asUrl(TURN));
-const { insertRowTolerant, missingColumnFrom, noteDroppedColumns, resetDroppedColumnNotices } = await import(asUrl(INSERT));
+const { decideAfterSearch, unansweredKind, STOPPED_SEARCH_NOTE, SUPERSEDED_SEARCH_NOTE } = await import(asUrl(TURN));
+const { insertRowTolerant, missingColumnFrom, noteDroppedColumns, resetDroppedColumnNotices, resetLearntColumns } = await import(asUrl(INSERT));
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -21,14 +21,40 @@ const check = (name, ok, detail = '') => {
 {
   check('a clean search answers', decideAfterSearch({ aborted: false, cancelled: false, superseded: false }) === 'answer');
   check('a stopped search says so', decideAfterSearch({ aborted: true, cancelled: true, superseded: false }) === 'stopped-note');
-  check('a superseded turn steps aside silently', decideAfterSearch({ aborted: true, cancelled: false, superseded: true }) === 'silent');
-  check('a newer question wins even after a stop', decideAfterSearch({ aborted: true, cancelled: true, superseded: true }) === 'silent');
+  check('a superseded turn says so instead of disappearing', decideAfterSearch({ aborted: true, cancelled: false, superseded: true }) === 'superseded-note');
+  check('a newer question wins over a stop, and still says so', decideAfterSearch({ aborted: true, cancelled: true, superseded: true }) === 'superseded-note');
   check('any other interruption still answers', decideAfterSearch({ aborted: true, cancelled: false, superseded: false }) === 'answer');
+
+  // the point of the rule: no combination of interruptions may end with the question unmarked
+  const everyOutcome = [false, true].flatMap((aborted) =>
+    [false, true].flatMap((cancelled) =>
+      [false, true].map((superseded) => decideAfterSearch({ aborted, cancelled, superseded })),
+    ),
+  );
+  check(
+    'every outcome is a visible one',
+    everyOutcome.every((action) => ['answer', 'stopped-note', 'superseded-note'].includes(action)),
+    JSON.stringify([...new Set(everyOutcome)]),
+  );
+
   check('the stopped note tells the reader how to just talk', /Search off/i.test(STOPPED_SEARCH_NOTE));
   check('the stopped note is not a mistaken empty answer', /nothing was answered/i.test(STOPPED_SEARCH_NOTE));
+  check('the superseded note names the newer question', /newer question/i.test(SUPERSEDED_SEARCH_NOTE));
+  check('the superseded note says the question was not answered', /not answered/i.test(SUPERSEDED_SEARCH_NOTE));
+
+  // the retry control has to know which turns are notes, not guess from "looks answerless"
+  check('the stopped note is recognised as an unanswered turn', unansweredKind(STOPPED_SEARCH_NOTE) === 'stopped');
+  check('the superseded note is recognised too', unansweredKind(SUPERSEDED_SEARCH_NOTE) === 'superseded');
+  check(
+    'an answer that merely mentions a stopped search is not a note',
+    unansweredKind(`${STOPPED_SEARCH_NOTE} Here is the answer.`) === null && unansweredKind('The search stopped, so this answer is unverified.') === null,
+  );
+  check('whitespace around a note does not lose its retry', unansweredKind(`  ${SUPERSEDED_SEARCH_NOTE}\n`) === 'superseded');
 }
 
 // ── 2. an answer saves even when the schema is a migration behind ──────────
+resetLearntColumns();
+
 function fakeClient({ reject = [], failWith = null } = {}) {
   const calls = [];
   const client = {
@@ -61,6 +87,7 @@ function fakeClient({ reject = [], failWith = null } = {}) {
 }
 
 {
+  resetLearntColumns();
   const { client, calls } = fakeClient({ reject: ['system_prompt'] });
   const outcome = await insertRowTolerant(client, 'messages', { role: 'assistant', content: 'hi', system_prompt: 'p' });
   check('a column the database lacks is dropped', outcome.dropped.join() === 'system_prompt', JSON.stringify(outcome.dropped));
@@ -70,6 +97,7 @@ function fakeClient({ reject = [], failWith = null } = {}) {
 }
 
 {
+  resetLearntColumns();
   const { client, calls } = fakeClient({
     failWith: { code: 'PGRST204', message: "Could not find the 'system_prompt' column of 'messages' in the schema cache" },
   });
@@ -79,11 +107,28 @@ function fakeClient({ reject = [], failWith = null } = {}) {
 }
 
 {
+  resetLearntColumns();
   const { client, calls } = fakeClient({ failWith: { code: '42501', message: 'new row violates row-level security policy' } });
   const outcome = await insertRowTolerant(client, 'messages', { role: 'assistant', content: 'hi', system_prompt: 'p' });
   check('a rejected row is reported, not retried', calls.length === 1 && outcome.data === null);
   check('and the real error survives', /row-level security/.test(outcome.error?.message ?? ''), outcome.error?.message);
   check('nothing was quietly dropped from a failed write', outcome.dropped.length === 0);
+}
+
+{
+  // once a column is known to be missing, later saves must not pay for the 400 again: a failed
+  // request in the console for every answer reads as the save still being broken
+  resetLearntColumns();
+  const { client, calls } = fakeClient({ reject: ['system_prompt'] });
+  const first = await insertRowTolerant(client, 'messages', { role: 'assistant', content: 'one', system_prompt: 'p' });
+  const callsForFirst = calls.length;
+  const second = await insertRowTolerant(client, 'messages', { role: 'assistant', content: 'two', system_prompt: 'p' });
+  check('the first save learns the column is missing', first.dropped.join() === 'system_prompt' && callsForFirst === 2, `${first.dropped.join()} / ${callsForFirst} calls`);
+  check('the next save skips it instead of retrying', calls.length === 3, `${calls.length} calls`);
+  check('and never sends the doomed column', !('system_prompt' in calls[2].payload));
+  check('the second answer saves with everything else', second.data?.content === 'two');
+  check('and still says what it left out', second.dropped.join() === 'system_prompt', JSON.stringify(second.dropped));
+  resetLearntColumns();
 }
 
 {

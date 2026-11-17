@@ -41,6 +41,11 @@ export function formatSource(source: Source, options: SourceContextOptions = {})
   return lines.join('\n');
 }
 
+/** How many of these sources the model will read page text for — used for the honest notice. */
+export function countWithPageText(results: Source[]): number {
+  return results.filter((source) => (source.content ?? '').trim().length > 0).length;
+}
+
 /** The whole ranked list as one block, in rank order. */
 export function formatSourceContext(results: Source[], options: SourceContextOptions = {}): string {
   const limit = options.limit ?? results.length;
@@ -48,9 +53,4 @@ export function formatSourceContext(results: Source[], options: SourceContextOpt
     .slice(0, Math.max(0, limit))
     .map((source) => formatSource(source, options))
     .join('\n\n');
-}
-
-/** How many of these sources the model will read page text for — used for the honest notice. */
-export function countWithPageText(results: Source[]): number {
-  return results.filter((source) => (source.content ?? '').trim().length > 0).length;
 }

@@ -171,6 +171,8 @@ run('ranking constants still separate', process.execPath, ['experiments/ranking-
 // ── 4g. a superseded search stops its requests instead of finishing ──────────
 nodeTest('search abort', 'experiments/search-abort.test.mjs');
 nodeTest('chat turn reliability', 'experiments/chat-reliability.test.mjs');
+nodeTest('answer grounding', 'experiments/grounding.test.mjs');
+nodeTest('machine trace', 'experiments/machine-trace.test.mjs');
 
 // ── 4g2. the same property from the outside, through the rendered hook ───────
 if (existsSync(join('node_modules', 'react-test-renderer'))) {
@@ -252,9 +254,12 @@ nodeTest('empty result', 'experiments/empty-result.test.mjs');
       '--alias:decode-named-character-reference=./node_modules/decode-named-character-reference/index.js',
     ]);
     bundle('src/lib/emptyResult.ts', empty);
+    const turn = join(dir, 'turn-decision.mjs');
+    bundle('src/lib/turnDecision.ts', turn);
     nodeTest('empty result bubble', 'experiments/empty-result-bubble.test.mjs', {
       BUBBLE_MODULE: asModulePath(bubble),
       EMPTY_MODULE: asModulePath(empty),
+      TURN_DECISION_MODULE: asModulePath(turn),
     });
   } catch (err) {
     failed.push('empty result bubble');

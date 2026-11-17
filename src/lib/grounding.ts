@@ -130,7 +130,9 @@ export function citationIds(sentence: string): string[] {
  */
 export function figures(sentence: string): string[] {
   const found: string[] = [];
-  const pattern = /(?:[$€£]\s?\d[\d.,]*|\b\d[\d.,]*\s?(?:%|percent|‰|bn|billion|million|trillion|k|ms|gb|mb|tb|kg|km|mi|°c|°f)\b|\b\d[\d.,]*\b)/gi;
+  // the unit branch has no trailing \b: after "%" the next character is punctuation or space, so a
+  // word boundary there never matches and "47%" would be read as the bare number "47"
+  const pattern = /(?:[$€£]\s?\d[\d.,]*|\b\d[\d.,]*\s?(?:%|percent|‰|bn|billion|million|trillion|k|ms|gb|mb|tb|kg|km|mi|°c|°f)|\b\d[\d.,]*\b)/gi;
   for (const match of sentence.matchAll(pattern)) {
     const raw = match[0].trim();
     const digits = raw.replace(/\D/g, '');
@@ -149,34 +151,31 @@ export function names(sentence: string, question = ''): string[] {
   const asked = normalize(question);
   const words = sentence.replace(ID, ' ').split(/\s+/).filter(Boolean);
   const found: string[] = [];
-  let current: string[] = [];
+  // the token index is carried along, because a sequence's position decides whether its capital is
+  // the start of a sentence; comparing cleaned tokens back against the raw ones missed "Results,"
+  let current: { text: string; index: number }[] = [];
 
   const flush = () => {
     if (current.length === 0) return;
-    const phrase = current.join(' ');
-    const key = normalize(phrase);
-    const firstWordIndex = words.findIndex((word) => word === current[0]);
-    const startsSentence = firstWordIndex === 0;
+    const phrase = current.map((token) => token.text).join(' ');
+    const startsSentence = current[0].index === 0;
     const single = current.length === 1;
+    const key = normalize(phrase);
     current = [];
     if (key.length < 3 || NOT_A_NAME.has(key)) return;
     if (single && startsSentence) return;
     // an all-caps acronym is specific enough to check; a plain capitalised word needs 4+ letters
-    const isAcronym = /^[A-Z][A-Z0-9]{1,}$/.test(phrase);
+    const isAcronym = /^[A-Z][A-Z0-9]+$/.test(phrase);
     if (single && !isAcronym && phrase.length < 4) return;
     if (asked && asked.includes(key)) return;
     found.push(phrase);
   };
 
-  for (const [index, word] of words.entries()) {
+  words.forEach((word, index) => {
     const clean = word.replace(/^[("'“\[*]+/, '').replace(/[)"'”\]*,.;:!?]+$/, '');
-    const capitalised = /^[A-Z][\w'’-]*/.test(clean);
-    if (capitalised && index > 0) {
-      current.push(clean);
-    } else {
-      flush();
-    }
-  }
+    if (index > 0 && /^[A-Z][\w'’-]*/.test(clean)) current.push({ text: clean, index });
+    else flush();
+  });
   flush();
   return [...new Set(found)];
 }
@@ -301,6 +300,10 @@ function summarize({
   if (unchecked.length > 0) {
     parts.push(`${unchecked.length} could not be checked (the cited source has only a snippet)`);
   }
-  if (parts.length === 0) return `All ${grounded} checked sentence${grounded === 1 ? '' : 's'} match their sources`;
+  if (parts.length === 0) {
+    return grounded === 1
+      ? 'All 1 checked sentence matches its source'
+      : `All ${grounded} checked sentences match their sources`;
+  }
   return parts.join(' · ');
 }

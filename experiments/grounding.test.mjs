@@ -72,7 +72,7 @@ const page = (citation, text) => ({ citation_id: citation, title: `Source ${cita
   check('a sentence with no figures or names is not flagged', find('The effect is real')?.status === 'unchecked');
   check('grounded sentences are counted', report.grounded === 2, String(report.grounded));
   check('only checkable sentences are counted', report.checked === 3, String(report.checked));
-  check('everything found reads as a clean bill', /^All 2 checked sentences match their sources$/.test(checkGrounding('nDCG was 0.42 [1].', sources).summary), checkGrounding('nDCG was 0.42 [1].', sources).summary);
+  check('everything found reads as a clean bill', /^All 1 checked sentence matches its source$/.test(checkGrounding('nDCG was 0.42 [1].', sources).summary), checkGrounding('nDCG was 0.42 [1].', sources).summary);
 }
 
 // ── 4. a name that is in no cited page ─────────────────────────────────────
@@ -135,7 +135,7 @@ const page = (citation, text) => ({ citation_id: citation, title: `Source ${cita
       query: 'what is the nDCG',
     }),
   );
-  check('a grounded answer reads as a clean bill', /All 1 checked sentence match(es)? their sources/.test(cleanHtml));
+  check('a grounded answer reads as a clean bill', /All 1 checked sentence matches its source/.test(cleanHtml));
 
   const quietHtml = renderToStaticMarkup(
     React.createElement(MessageBubble, {

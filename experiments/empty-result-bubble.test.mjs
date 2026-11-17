@@ -137,6 +137,10 @@ check('render: the stopped retry names the question it re-runs', /Retry — sear
 
 const replaced = render({ message: message(SUPERSEDED_SEARCH_NOTE), query: 'graph neural network survey', onRetryTurn: retryTurn });
 check('render: a superseded turn offers Retry', retryControl(replaced) !== '');
+
+// the note is not an answer, so nothing may judge it as one
+check('render: a stopped turn is not badged as unverified', !/Unverified/.test(stopped));
+check('render: no grounding verdict is passed on a turn with no answer', !/Grounding:/.test(stopped), 'grounding strip on a note');
 check('render: the superseded retry says why it is there', /Ask this again — a newer question replaced it/.test(replaced));
 
 const errored = render({ message: message('Error: the request failed'), query: 'anything', onRetryTurn: retryTurn });
@@ -145,6 +149,11 @@ check('render: a failed turn offers Retry', retryControl(errored) !== '');
 check('render: an ordinary answer gets no turn retry', retryControl(answer) === '');
 check('render: a source-backed answer keeps its own Retry, not a second one', retryControl(sourced) === '');
 check('render: no query means nothing to re-run', retryControl(render({ message: message(STOPPED_SEARCH_NOTE), onRetryTurn: retryTurn })) === '');
+// "nothing to re-ask" is not "an answer to audit": the grounding verdict stays off the note either way
+check(
+  'render: a note without a question to re-ask is still not audited',
+  !/Grounding:/.test(render({ message: message(STOPPED_SEARCH_NOTE), onRetryTurn: retryTurn })),
+);
 check(
   'render: still streaming, no retry under a half-written answer',
   retryControl(render({ message: message(STOPPED_SEARCH_NOTE), query: 'investor deck', isStreaming: true, onRetryTurn: retryTurn })) === '',
@@ -191,6 +200,40 @@ check(
   'render: an unanswered turn gets Retry, not derived questions',
   !/strongest primary source/.test(stopped) && !/The bottom line of this answer/.test(stopped),
 );
+// the same search must not be offered twice under two labels: the model's own extra searches are
+// already buttons under "Searched again"
+const alreadySearched = render({
+  message: { ...message(blufAnswer), tool_searches: ['Surface Code Thresholds'] },
+  query: 'how do surface codes scale?',
+  onRetrySearch: () => {},
+  onFollowUp: () => {},
+});
+check(
+  'render: a bottom line the model already searched is not offered again',
+  !/The bottom line of this answer as a query/.test(alreadySearched),
+);
+check(
+  'render: that search still appears under “Searched again”',
+  /Searched again/.test(alreadySearched) && /Surface Code Thresholds/.test(alreadySearched),
+);
+check('render: its derived questions are unaffected', /strongest primary source on surface code/.test(alreadySearched));
+
+const otherSearched = render({
+  message: { ...message(blufAnswer), tool_searches: ['logical qubit benchmarks'] },
+  query: 'how do surface codes scale?',
+  onRetrySearch: () => {},
+  onFollowUp: () => {},
+});
+check(
+  'render: a different extra search leaves the bottom-line chip in place',
+  /The bottom line of this answer as a query/.test(otherSearched),
+);
+
+// a thin phrase is a query, not a subject worth three questions
+const thinSubject = render({ message: message('Costs fell [1].'), query: 'q', onRetrySearch: () => {}, onFollowUp: () => {} });
+check('render: a thin bottom line still gets its search chip', /The bottom line of this answer as a query/.test(thinSubject));
+check('render: a thin bottom line gets no derived questions', !/strongest primary source/.test(thinSubject));
+
 check(
   'render: mid-stream there is no bottom line to search yet',
   !/The bottom line of this answer/.test(

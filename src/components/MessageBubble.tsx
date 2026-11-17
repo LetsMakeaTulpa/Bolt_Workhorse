@@ -15,7 +15,7 @@ import { describeUnverified, isUnverifiedAnswer } from '../lib/verification';
 import { checkGrounding } from '../lib/grounding';
 import { summarizeMachine } from '../lib/machineTrace';
 import { unansweredKind } from '../lib/turnDecision';
-import { blufOf } from '../lib/blufQuery';
+import { blufOf, sameQuery } from '../lib/blufQuery';
 
 interface MessageBubbleProps {
   message: Message;
@@ -75,26 +75,39 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
   // press is a dead end, and the model's own FOLLOW-UPS section arrives often enough to rely on but
   // not often enough to trust alone.
   const bluf = useMemo(
-    () => (isUser || isStreaming ? { lead: '', query: '', followUps: [] } : blufOf(prose)),
+    () => (isUser || isStreaming ? { lead: '', subject: '', query: '', followUps: [] } : blufOf(prose)),
     [isUser, isStreaming, prose],
   );
+
+  // the model's own extra searches are already offered as buttons under "Searched again". When the
+  // bottom line reduces to one of them, the same search would appear twice under two labels, so the
+  // model's phrasing keeps the chip and the derived one steps aside.
+  const blufAlreadySearched = bluf.query !== '' && machine.extraSearches.some((query) => sameQuery(query, bluf.query));
+  const showBlufQuery = bluf.query !== '' && !blufAlreadySearched;
 
   // A turn can end with no answer at all: the search was stopped, a newer question replaced it, or
   // the request failed. In every one of those the reader is left looking at a question with nothing
   // usable under it, and until now the only way to try again was to type it out. The sources block
   // that owns the Retry control never renders on these turns, because there are no sources.
-  const unanswered = useMemo(() => {
-    if (isUser || isStreaming || !query) return null;
+  //
+  // `unansweredContent` is what the message *is* — no answer to audit, nothing to verify;
+  // `unanswered` adds the one thing Retry needs on top, which is a question to ask again.
+  const unansweredContent = useMemo(() => {
+    if (isUser || isStreaming) return null;
     const kind = unansweredKind(message.content);
     if (kind) return kind;
     return /^Error:/.test(message.content.trim()) ? ('failed' as const) : null;
-  }, [isUser, isStreaming, query, message.content]);
+  }, [isUser, isStreaming, message.content]);
+  const unanswered = unansweredContent && query ? unansweredContent : null;
 
   // the anti-fabrication promise applied to the answer itself: a citation ID must be one of this
   // answer's sources, and the figures and names in a sentence must appear in the pages it cites
+  // nothing to check on a turn that never answered: the note is not a claim, and running the
+  // citation audit over it produced "1 sentence with figures or names not found" under a stopped
+  // search, which reads as a verdict on an answer that does not exist
   const grounding = useMemo(
-    () => (isUser || isStreaming ? null : checkGrounding(prose, message.search_results ?? [], query ?? '')),
-    [isUser, isStreaming, prose, message.search_results, query],
+    () => (isUser || isStreaming || unansweredContent ? null : checkGrounding(prose, message.search_results ?? [], query ?? '')),
+    [isUser, isStreaming, unansweredContent, prose, message.search_results, query],
   );
 
   // the model's own questions are better than any frame around its lead, so they win when present
@@ -147,8 +160,9 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
       </div>
 
       <div className={`flex flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'} max-w-[80%]`}>
-        {/* a gap report already says it found nothing; the badge is for answers that talk past that */}
-        {isUnverifiedAnswer(message) && !isGapReport(message.content) && (
+        {/* a gap report already says it found nothing, and an unanswered turn is not an answer that
+            failed verification, so the badge is only for answers that talk past a real search */}
+        {isUnverifiedAnswer(message) && !isGapReport(message.content) && !unansweredContent && (
           <span
             title={describeUnverified().detail}
             className="flex items-center gap-1 rounded-md border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-[10px] font-medium text-warning"
@@ -390,13 +404,13 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
 
         {!isUser &&
           !isStreaming &&
-          !unanswered &&
+          !unansweredContent &&
           !isGapReport(message.content) &&
-          (bluf.query !== '' || nextQuestions.length > 0) && (
+          (showBlufQuery || nextQuestions.length > 0) && (
             <div className="flex w-full flex-wrap items-center gap-1.5 pt-0.5">
               <span className="text-[10px] uppercase tracking-wider text-text-muted">Keep digging</span>
               {/* the bottom line as a query, so the lead can be searched without retyping it */}
-              {bluf.query !== '' && (
+              {showBlufQuery && (
                 <button
                   type="button"
                   onClick={() => onRetrySearch?.(bluf.query)}

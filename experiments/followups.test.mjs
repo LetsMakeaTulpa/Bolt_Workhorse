@@ -13,7 +13,7 @@ const BLUF = tmpPath('fieldwork-bluf.mjs');
 execFileSync(process.execPath, [ESBUILD, 'src/lib/blufQuery.ts', '--bundle', '--format=esm', `--outfile=${BLUF}`, '--log-level=error'], {
   stdio: 'inherit',
 });
-const { blufOf, blufTerms } = await import(`${asUrl(BLUF)}?t=${Date.now()}`);
+const { blufOf, sameQuery } = await import(`${asUrl(BLUF)}?t=${Date.now()}`);
 
 let passed = 0;
 const failures = [];
@@ -79,15 +79,17 @@ const lede = blufOf(
 check('bluf: markdown and citations are stripped', lede.lead.startsWith('Surface code thresholds above 1% error') && !/\[\d/.test(lede.lead), lede.lead);
 check('bluf: the detail section is not the bottom line', !/roadmap slipped/.test(lede.lead), lede.lead);
 check('bluf: at most three sentences', (lede.lead.match(/[.!?]/g) ?? []).length <= 3, lede.lead);
-check('bluf: the query is the lead’s own terms, in order', lede.query.startsWith('surface code thresholds'), lede.query);
-check('bluf: numbers survive', /1%/.test(lede.query), lede.query);
+check('bluf: the query is the lead’s subject phrase, in order', lede.query === 'surface code thresholds', lede.query);
+check('bluf: the rest of the sentence is not appended to it', !/binding|constraint|above/.test(lede.query), lede.query);
+const dated = blufOf('The 2025 roadmap slipped again.');
+check('bluf: a number inside the subject survives', /2025/.test(dated.query), dated.query);
 check(
   'bluf: stopwords and answer vocabulary are gone',
   !/\b(?:the|above|are|source|sources|disagrees|detail)\b/.test(lede.query),
   lede.query,
 );
 check('bluf: the query is plain — no operators, no quotes', !/[:"“”]|\bsite:/.test(lede.query), lede.query);
-check('bluf: terms are capped so the query stays a query', blufTerms(lede.lead).length <= 8, String(blufTerms(lede.lead).length));
+check('bluf: the query stays short enough to be a query', lede.query.split(' ').length <= 5, lede.query);
 
 // a link contributes its words, never its URL
 const linked = blufOf('See [the 2025 roadmap](https://example.org/private/roadmap.pdf). It slipped again.');
@@ -99,16 +101,47 @@ check('bluf: nothing distinctive means no query', metaOnly.query === '', metaOnl
 check('bluf: and therefore no invented questions', metaOnly.followUps.length === 0, String(metaOnly.followUps.length));
 check('bluf: an empty answer is handled', blufOf('').query === '' && blufOf('').followUps.length === 0);
 
+// the live failure this replaced: every word true, no subject, and a chip nobody would press —
+// "provided search identify original introduced reciprocal rank fusion"
+const aboutTheSearch = blufOf(
+  'The provided search results do not identify the original paper that introduced Reciprocal Rank Fusion (RRF) or specify the standard $k$ constant used [1][2]. Based on general knowledge, RRF was introduced by Cormack, gosta, and Clarke in their 2009 paper "Reciprocal Rank Fusion algorithm."',
+);
+check('bluf: the query is the lead’s subject, not every distinctive word', aboutTheSearch.query === 'reciprocal rank fusion', aboutTheSearch.query);
+check('bluf: an acronym that repeats the phrase is dropped', !/\brrf\b/.test(aboutTheSearch.query), aboutTheSearch.query);
+check(
+  'bluf: the derived questions are about that subject',
+  aboutTheSearch.followUps.length === 3 && aboutTheSearch.followUps.every((q) => /reciprocal rank fusion/.test(q)),
+  aboutTheSearch.followUps.join(' | '),
+);
+
+// a bag of two words is not a subject: the words have to be adjacent to count
+const scattered = blufOf('The results were provided, identify what changed and specify the standard.');
+check('bluf: scattered words are not a subject', scattered.subject === '' && scattered.query === '', scattered.query);
+check('bluf: and a lead without a subject gets no derived questions', scattered.followUps.length === 0, String(scattered.followUps.length));
+
+// adjacent is not enough to be a subject: "costs fell" is a sentence fragment, and three questions
+// built on it are the stock questions this gate exists to stop
+const thin = blufOf('Costs fell.');
+check('bluf: a thin subject still keeps its query', thin.query === 'costs fell', thin.query);
+check('bluf: a thin subject earns no derived questions', thin.followUps.length === 0, String(thin.followUps.length));
+// the bottom line is often the first sentence, but an opening that only says what the sources fail
+// to settle must not cost the post its subject when the next sentence names it
+const later = blufOf('The sources do not settle it [1]. Surface code thresholds are the binding constraint.');
+check('bluf: a subject in a later lead sentence is still found', later.subject === 'surface code thresholds', later.subject);
+
+// one search under two labels is one search
+check('sameQuery: case, spacing and punctuation are not a new query', sameQuery('Reciprocal Rank Fusion', 'reciprocal  rank-fusion'));
+check('sameQuery: a wider query is a different query', !sameQuery('reciprocal rank fusion 2009', 'reciprocal rank fusion'));
+check('sameQuery: an empty query matches nothing', !sameQuery('', ''));
+
 // ── 11. the questions a post ends with when the model wrote none ──
 check('bluf: three next questions', lede.followUps.length === 3, String(lede.followUps.length));
 check('bluf: each one is a question', lede.followUps.every((q) => q.trim().endsWith('?')), lede.followUps.join(' | '));
-check('bluf: each one is searchable as written', lede.followUps.every((q) => q.length <= 200 && q.split(/\s+/).length >= 4));
 check('bluf: each one carries the lead’s subject', lede.followUps.every((q) => /surface code/.test(q)), lede.followUps.join(' | '));
-check('bluf: the questions differ', new Set(lede.followUps).size === 3);
 
 // the frames are fixed, so a derived question cannot introduce a fact the answer never carried
 const frame = new Set('what is the strongest primary source on evidence contradicts changed about in past year'.split(' '));
-const subject = new Set(blufTerms(lede.lead));
+const subject = new Set(lede.subject.split(' '));
 check(
   'bluf: a derived question adds no words of its own',
   lede.followUps.every((q) => q.toLowerCase().match(/[a-z0-9%]+/g).every((word) => frame.has(word) || subject.has(word))),

@@ -38,7 +38,7 @@ const CALIBRATE = args.includes('--calibrate');
  * not "this constant does nothing". Ten tolerances up is the band worth warning about: passing today,
  * one flat query away from failing.
  */
-const SEPARATION_TOLERANCE = { ndcg: 0.0005, margin: 0.0005 };
+const SEPARATION_TOLERANCE = { ndcg: 0.0005, margin: 0.0005, separation: 0.0005 };
 const NEAR_THRESHOLD = SEPARATION_TOLERANCE.margin * 10;
 
 const FIXTURE_PATH = 'experiments/fixtures/ranking-queries.json';
@@ -95,6 +95,26 @@ function margin(ranked, judgements) {
   return (best - Math.max(...lesser.map((item) => item.score))) / best;
 }
 
+/**
+ * How far apart the scores are, independent of the order they produce.
+ *
+ * `margin` only looks at one boundary — best graded versus best lesser — so a constant that changes
+ * how sharply the scorer separates everything below the winner is invisible to it. The relevance
+ * exponent is exactly that kind of constant: raising it from 1.0 to 1.5 shrinks every lower score by
+ * a different amount without necessarily swapping any pair. This averages the gap between each pair
+ * of neighbours, as a share of the top score, so it reads as "how spread out is this ranking".
+ * 0 means every result scored the same; a larger number means the winner stands further clear.
+ */
+function scoreSeparation(ranked) {
+  const scores = ranked.map((item) => Number(item.score ?? 0)).filter((score) => score > 0);
+  if (scores.length < 2 || !(scores[0] > 0)) return null;
+  const gaps = [];
+  for (let index = 0; index < scores.length - 1; index += 1) {
+    gaps.push((scores[index] - scores[index + 1]) / scores[0]);
+  }
+  return mean(gaps);
+}
+
 const mean = (values) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0);
 const meanDefined = (values) => mean(values.filter((value) => value !== null && value !== undefined));
 
@@ -131,6 +151,8 @@ function evaluate({ deltas = {}, fusion = {} }) {
       class: entry.class,
       ndcg: ndcg(ranked, judgements),
       margin: margin(ranked, judgements),
+      // the order is a coarse reading of the same scores; this is the scores themselves
+      separation: scoreSeparation(ranked),
       // the ranked order itself, so an ablation can say whether a constant reorders anything or
       // only nudges a score
       order: ranked.map((item) => canonicalUrl(item.url)).join('|'),
@@ -140,6 +162,7 @@ function evaluate({ deltas = {}, fusion = {} }) {
     per,
     ndcg: mean(per.map((row) => row.ndcg)),
     margin: meanDefined(per.map((row) => row.margin)),
+    separation: meanDefined(per.map((row) => row.separation)),
   };
 }
 
@@ -174,7 +197,7 @@ const results = [];
 const sweeps = [];
 for (const grid of GRIDS) {
   console.log(`${grid.label} (current ${grid.defaultValue})`);
-  console.log('  value   nDCG    Δ       margin  Δ       train   holdout');
+  console.log('  value   nDCG    Δ       margin  Δ       sep     Δ       train   holdout');
   let best = null;
   for (const value of grid.values) {
     const result = evaluate(grid.apply(value));
@@ -182,16 +205,20 @@ for (const grid of GRIDS) {
     const holdout = mean(result.per.filter((row) => !TRAIN.has(row.class)).map((row) => row.ndcg));
     const dn = result.ndcg - baseline.ndcg;
     const dm = result.margin - baseline.margin;
+    const dsep = result.separation - baseline.separation;
     const isDefault = value === grid.defaultValue;
     console.log(
-      `  ${String(value).padEnd(6)} ${result.ndcg.toFixed(3)}  ${(dn >= 0 ? '+' : '') + dn.toFixed(3)}  ${result.margin.toFixed(3)}  ${(dm >= 0 ? '+' : '') + dm.toFixed(3)}   ${train.toFixed(3)}   ${holdout.toFixed(3)}${isDefault ? '   ← current' : ''}`,
+      `  ${String(value).padEnd(6)} ${result.ndcg.toFixed(3)}  ${(dn >= 0 ? '+' : '') + dn.toFixed(3)}  ${result.margin.toFixed(3)}  ${(dm >= 0 ? '+' : '') + dm.toFixed(3)}   ${result.separation.toFixed(3)}  ${(dsep >= 0 ? '+' : '') + dsep.toFixed(3)}   ${train.toFixed(3)}   ${holdout.toFixed(3)}${isDefault ? '   ← current' : ''}`,
     );
     sweeps.push({
+      key: grid.key,
       label: grid.label,
       value,
       isDefault,
       dn,
       dm,
+      dsep,
+      separation: result.separation,
       reordered: result.per.filter((row, index) => row.order !== baseline.per[index].order).length,
     });
     if (!best || result.ndcg > best.result.ndcg + 1e-9) best = { value, result, train, holdout };
@@ -208,25 +235,29 @@ for (const grid of GRIDS) {
 if (CALIBRATE) {
   console.log(`
 calibration: what a real change to a constant moves (smallest first)`);
-  console.log("  constant              value   nDCG Δ    margin Δ  reordered");
+  console.log("  constant              value   nDCG Δ    margin Δ  sep Δ     reordered");
   const ordered = [...sweeps]
     .filter((row) => !row.isDefault)
     .sort((a, b) => Math.abs(a.dn) - Math.abs(b.dn) || Math.abs(a.dm) - Math.abs(b.dm));
   for (const row of ordered) {
     console.log(
-      `  ${row.label.padEnd(21)} ${String(row.value).padEnd(7)} ${((row.dn >= 0 ? "+" : "") + row.dn.toFixed(4)).padEnd(9)} ${((row.dm >= 0 ? "+" : "") + row.dm.toFixed(4)).padEnd(9)} ${row.reordered}`,
+      `  ${row.label.padEnd(21)} ${String(row.value).padEnd(7)} ${((row.dn >= 0 ? "+" : "") + row.dn.toFixed(4)).padEnd(9)} ${((row.dm >= 0 ? "+" : "") + row.dm.toFixed(4)).padEnd(9)} ${((row.dsep >= 0 ? "+" : "") + row.dsep.toFixed(4)).padEnd(9)} ${row.reordered}`,
     );
   }
 
   const reordering = ordered.filter((row) => row.reordered > 0);
   const quietestReorder = reordering.length ? Math.min(...reordering.map((row) => Math.abs(row.dn))) : 0;
   const quietestMargin = ordered.length ? Math.min(...ordered.map((row) => Math.abs(row.dm))) : 0;
+  const quietestSeparation = ordered.length ? Math.min(...ordered.map((row) => Math.abs(row.dsep))) : 0;
   console.log(`
   floor: the smallest change that still reorders a query moves nDCG by ${quietestReorder.toFixed(4)};`);
   const clearance = quietestMargin / SEPARATION_TOLERANCE.margin;
   console.log(
     `         the smallest margin move from any change is ${quietestMargin.toFixed(4)}; the gate sits at ` +
       `${SEPARATION_TOLERANCE.margin} (${clearance.toFixed(1)}x below it), warning from ${NEAR_THRESHOLD}`,
+  );
+  console.log(
+    `         the smallest score-separation move is ${quietestSeparation.toFixed(4)}; the gate sits at ${SEPARATION_TOLERANCE.separation}`,
   );
 }
 
@@ -274,35 +305,65 @@ if (adopt.length) {
 if (ABLATE) {
   const current = evaluate({});
   console.log(`\nablation: current config nDCG ${current.ndcg.toFixed(3)}, margin ${current.margin.toFixed(3)}`);
-  console.log('  constant              neutral   nDCG    Δ       margin   Δ        verdict');
+  console.log('  constant              neutral   nDCG    Δ       margin   Δ        sep    Δ        verdict');
   const ABLATIONS = [
-    { label: 'freshness gain 1.2', neutral: 'no freshness', cfg: { fusion: { recency: false } } },
-    { label: 'relevance ^1.5', neutral: '^1.0', cfg: { fusion: { relevanceExponent: 1.0 } } },
-    { label: 'RRF k=60', neutral: 'k=10', cfg: { fusion: { k: 10 } } },
-    { label: 'exa + semantic .45', neutral: '0', cfg: { deltas: { exaSemantic: 0 } } },
-    { label: 'exa - navigational .5', neutral: '0', cfg: { deltas: { exaNavigational: 0 } } },
+    { key: 'recencyGain', label: 'freshness gain 1.2', neutral: 'no freshness', cfg: { fusion: { recency: false } } },
+    { key: 'relevanceExponent', label: 'relevance ^1.5', neutral: '^1.0', cfg: { fusion: { relevanceExponent: 1.0 } } },
+    { key: 'k', label: 'RRF k=60', neutral: 'k=10', cfg: { fusion: { k: 10 } } },
+    { key: 'exaSemantic', label: 'exa + semantic .45', neutral: '0', cfg: { deltas: { exaSemantic: 0 } } },
+    { key: 'exaNavigational', label: 'exa - navigational .5', neutral: '0', cfg: { deltas: { exaNavigational: 0 } } },
     { label: 'exa - fresh .2', neutral: '0', cfg: { deltas: { exaFresh: 0 } } },
-    { label: 'tavily + fresh .45', neutral: '0', cfg: { deltas: { tavilyFresh: 0 } } },
+    { key: 'tavilyFresh', label: 'tavily + fresh .45', neutral: '0', cfg: { deltas: { tavilyFresh: 0 } } },
 
   ];
   const separations = [];
-  for (const { label, neutral, cfg } of ABLATIONS) {
+  for (const { key, label, neutral, cfg } of ABLATIONS) {
     const without = evaluate(cfg);
     const dn = current.ndcg - without.ndcg;
     const dm = current.margin - without.margin;
     const reordered = current.per.filter((row, index) => row.order !== without.per[index].order).length;
-    separations.push({ label, neutral, reordered, dn, dm });
-    const verdict = dn > 0.002
+    // the scores are the finer reading: a constant can leave every pair in place and still change
+    // how far the winner stands clear of the field, which is exactly what the exponent does
+    const dsep = current.separation - without.separation;
+    // Does the fixture identify the value, or only that the constant matters? The ablation asks
+    // "would removing it be noticed"; the grid asks "which value should it hold". A grid where no
+    // value separates from the default beyond the calibrated tolerance has not identified the
+    // constant, and reporting that as earning its place would claim a verdict the data lacks.
+    const beyond = (value, tolerance) => Math.abs(value) > tolerance;
+    // decisive: the ablation itself clears a tolerance, or leaves at least one query in a different
+    // order — order is evidence no tolerance can discount
+    const decisive =
+      reordered > 0 ||
+      beyond(dn, SEPARATION_TOLERANCE.ndcg) ||
+      beyond(dm, SEPARATION_TOLERANCE.margin) ||
+      beyond(dsep, SEPARATION_TOLERANCE.separation);
+    const gridRows = key ? sweeps.filter((row) => row.key === key && !row.isDefault) : [];
+    // the grid answers a different question: whether any *other* value beats the default measurably
+    const gridIdentifies = gridRows.some(
+      (row) => row.reordered > 0 || beyond(row.dn, SEPARATION_TOLERANCE.ndcg) ||
+        beyond(row.dm, SEPARATION_TOLERANCE.margin) || beyond(row.dsep, SEPARATION_TOLERANCE.separation),
+    );
+    const identified = decisive || gridIdentifies;
+    separations.push({ key, label, neutral, reordered, dn, dm, dsep, identified });
+    const verdict = !identified
+      ? gridRows.length > 0
+        ? 'unidentifiable (no value separates)'
+        : 'unidentifiable (nothing to compare against)'
+      : !decisive
+        ? 'unidentifiable (default not separated, other values are)'
+      : dn > 0.002
       ? 'earns its place (order)'
-      : dm > 0.01
-        ? 'earns its place (margin only)'
-        : dm < -0.01
-          ? 'removal widens the lead'
-          : dn < -0.002
-            ? 'removal improves the order'
-            : 'no measurable effect here';
+      : dsep > SEPARATION_TOLERANCE.separation
+        ? 'earns its place (separation)'
+        : dm > SEPARATION_TOLERANCE.margin
+          ? 'earns its place (margin only)'
+          : dsep < -SEPARATION_TOLERANCE.separation || dm < -SEPARATION_TOLERANCE.margin
+            ? 'removal sharpens the ranking'
+            : dn < -0.002
+              ? 'removal improves the order'
+              : 'separates, but below the reporting floor';
     console.log(
-      `  ${label.padEnd(21)} ${neutral.padEnd(13)} ${without.ndcg.toFixed(3)}  ${(dn >= 0 ? '+' : '') + dn.toFixed(3)}  ${without.margin.toFixed(3)}  ${(dm >= 0 ? '+' : '') + dm.toFixed(3)}   ${verdict}`,
+      `  ${label.padEnd(21)} ${neutral.padEnd(13)} ${without.ndcg.toFixed(3)}  ${(dn >= 0 ? '+' : '') + dn.toFixed(3)}  ${without.margin.toFixed(3)}  ${(dm >= 0 ? '+' : '') + dm.toFixed(3)}  ${(dsep >= 0 ? '+' : '') + dsep.toFixed(3)}   ${verdict}`,
     );
   }
 
@@ -311,30 +372,45 @@ if (ABLATE) {
   // so any value chosen for it is arbitrary and the ablation's "earns its place" is unearned.
   if (ASSERT_SEPARATION) {
     const reordering = separations.filter((row) => row.reordered > 0).length;
+    const byScore = separations.filter(
+      (row) => row.reordered === 0 && Math.abs(row.dsep) > SEPARATION_TOLERANCE.separation,
+    ).length;
+    const unidentified = separations.filter((row) => !row.identified);
     console.log(
-      `\nseparation: ${separations.length} constants · ${reordering} reorder at least one query · ${separations.length - reordering} move only a score`,
+      `
+separation: ${separations.length} constants · ${reordering} reorder at least one query · ` +
+        `${byScore} separate the scores without moving a pair · ${unidentified.length} unidentifiable`,
     );
     // tolerances: see SEPARATION_TOLERANCE below --calibrate is what set them
     const silent = separations.filter(
       (row) =>
         row.reordered === 0 &&
         Math.abs(row.dn) <= SEPARATION_TOLERANCE.ndcg &&
-        Math.abs(row.dm) <= SEPARATION_TOLERANCE.margin,
+        Math.abs(row.dm) <= SEPARATION_TOLERANCE.margin &&
+        Math.abs(row.dsep) <= SEPARATION_TOLERANCE.separation,
     );
     for (const row of separations.filter((item) => item.reordered === 0 && !silent.includes(item))) {
-      console.log(`  · ${row.label} changes no ordering, only the margin (Δ${row.dm.toFixed(3)})`);
-      if (Math.abs(row.dn) > NEAR_THRESHOLD || Math.abs(row.dm) > NEAR_THRESHOLD) continue;
+      console.log(`  · ${row.label} changes no ordering, but separates the scores (Δsep ${row.dsep.toFixed(3)})`);
+      if (Math.abs(row.dsep) > NEAR_THRESHOLD) continue;
       console.log(
-        `  ! ${row.label} sits near the threshold (ΔnDCG ${row.dn.toFixed(4)}, Δmargin ${row.dm.toFixed(4)}): the smallest effect this fixture resolves is ~0.0007, so one more flat query would make it untestable`,
+        `  ! ${row.label} sits near the threshold (Δsep ${row.dsep.toFixed(4)}): the smallest score separation this fixture resolves is ~0.0007, so one more flat query would make it untestable`,
       );
     }
     if (silent.length > 0) {
       for (const row of silent) {
         console.error(
-          `  ✗ ${row.label} is indistinguishable from ${row.neutral}: 0 queries reordered, ΔnDCG ${row.dn.toFixed(3)}, Δmargin ${row.dm.toFixed(3)} — nothing on this fixture tests it`,
+          `  ✗ ${row.label} is indistinguishable from ${row.neutral}: 0 queries reordered, ΔnDCG ${row.dn.toFixed(3)}, Δmargin ${row.dm.toFixed(3)}, Δsep ${row.dsep.toFixed(3)} — nothing on this fixture tests it`,
         );
       }
       process.exit(1);
+    }
+    // a constant whose value no grid row distinguishes is reported as such, even when its
+    // ablation moves something: "earns its place" answers a different question
+    for (const row of unidentified) {
+      console.log(
+        `  ? ${row.label} is unidentifiable on this fixture: no value in its grid separates from ` +
+          `${row.neutral} beyond tolerance, so the value it holds now is unfitted`,
+      );
     }
     console.log('  ✓ every constant differs from its neutral value');
   }

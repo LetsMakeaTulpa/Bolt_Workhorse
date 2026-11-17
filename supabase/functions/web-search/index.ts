@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { mapExaResults, mapGrepHits, mapShodanMatches, mapTavilyResults } from "./parsers.ts";
+import { DEFAULT_EXTRACT_LIMIT, extractTopSources, type ExtractionSummary } from "./extract.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -30,6 +31,10 @@ interface SearchResult {
   engines?: string[];
   relevance_score?: number;
   citation_id?: string;
+  /** full page text, when this source was inside the extraction window */
+  content?: string;
+  /** which extractor read the page: a plain fetch, or a Firecrawl render */
+  content_source?: string;
 }
 
 /** Secrets for one request: the caller's own keys first, then the function environment. */
@@ -786,6 +791,9 @@ export async function handleRequest(req: Request): Promise<Response> {
       useDorks = false,
       preset = "general",
       compileQueries: shouldCompile = true,
+      // the ranked top is worth reading in full; a caller can turn that off for speed
+      extract: shouldExtract = true,
+      extractLimit = DEFAULT_EXTRACT_LIMIT,
     } = body;
 
     if (!query) {
@@ -889,15 +897,30 @@ export async function handleRequest(req: Request): Promise<Response> {
       citation_id: `[${i + 1}]`,
     }));
 
+    // Read the top pages, so the answer is written from the page rather than from a search engine's
+    // summary of it. Failures are reported, never thrown: a result without text is still a result.
+    let results: SearchResult[] = finalResults;
+    let extraction: ExtractionSummary | null = null;
+    if (shouldExtract !== false && finalResults.length > 0) {
+      const limit = Math.min(8, Math.max(0, Number(extractLimit) || DEFAULT_EXTRACT_LIMIT));
+      const extracted = await extractTopSources(finalResults, {
+        limit,
+        firecrawlKey: keyCandidates(userKeys, 'FIRECRAWL_API_KEY')[0] ?? '',
+      });
+      results = extracted.results;
+      extraction = extracted.summary;
+    }
+
     return new Response(
       JSON.stringify({
         query,
         queries_used: queries,
         engines_used: engines,
-        total_results: finalResults.length,
+        total_results: results.length,
         preset,
         engine_status: [...reports.values()],
-        results: finalResults,
+        extraction,
+        results,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

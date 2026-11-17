@@ -4,9 +4,9 @@
 // Run: node experiments/ranking-compare.test.mjs
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { TMP_ROOT } from './lib/build.mjs';
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -14,7 +14,16 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const WORK = mkdtempSync(join(tmpdir(), 'fieldwork-compare-'));
+// one fresh folder per run inside the build cache, removed when the run ends: a suite that leaves
+// its scratch folders behind makes the next person wonder which of them still matter
+const WORK = mkdtempSync(join(TMP_ROOT, 'compare-'));
+process.on('exit', () => {
+  try {
+    rmSync(WORK, { recursive: true, force: true });
+  } catch {
+    // a locked file on Windows is not worth failing a green run over
+  }
+});
 const MODULE = join(WORK, 'fusion.mjs');
 
 const run = (args) =>

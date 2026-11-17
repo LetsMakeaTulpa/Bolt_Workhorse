@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Message, Source } from '../types';
-import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown, FileText } from 'lucide-react';
+import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown, FileText, ShieldAlert } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { splitFollowUps } from '../lib/followUps';
@@ -11,6 +11,7 @@ import { broadenQuery, isGapReport } from '../lib/emptyResult';
 import { DORK_LANES } from '../lib/dorks';
 import { FIELDWORK_SYSTEM_PROMPT } from '../lib/systemPrompt';
 import { promptWordCount } from '../lib/promptVariant';
+import { describeUnverified, isUnverifiedAnswer } from '../lib/verification';
 
 interface MessageBubbleProps {
   message: Message;
@@ -100,6 +101,16 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onSa
       </div>
 
       <div className={`flex flex-col gap-1.5 ${isUser ? 'items-end' : 'items-start'} max-w-[80%]`}>
+        {/* a gap report already says it found nothing; the badge is for answers that talk past that */}
+        {isUnverifiedAnswer(message) && !isGapReport(message.content) && (
+          <span
+            title={describeUnverified().detail}
+            className="flex items-center gap-1 rounded-md border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-[10px] font-medium text-warning"
+          >
+            <ShieldAlert size={10} className="flex-shrink-0" />
+            {describeUnverified().label}
+          </span>
+        )}
         {message.search_enabled && results.length > 0 && (
           <div className="mb-0.5 w-full rounded-lg border border-border-subtle bg-bg-surface p-2.5">
             <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-olive">

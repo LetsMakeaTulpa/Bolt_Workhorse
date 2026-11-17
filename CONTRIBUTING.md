@@ -27,15 +27,15 @@ npm run smoke -- --live  # + read-only probes against the live Supabase project 
 
 Rules a change has to respect:
 
-- **Green means every check that ran passed, 0 failed** — 27 on a full install (23 that always run,
+- **Green means every check that ran passed, 0 failed** — 34 on a full install (30 that always run,
   plus 4 database checks). The script exits non-zero if anything fails; do not merge on a red run,
   and do not treat a red run as "probably the environment" without reading the log. Failing checks
   print the last 20 lines of their output.
-- **A skip is not a pass.** Two test-only packages are deliberately not in `package.json` and are
-  installed with `npm install --no-save` when the network allows: `@electric-sql/pglite` for the
-  four database checks, and `react-test-renderer` for the check that mounts `useSearch`. When one
-  of them cannot be installed the affected checks report SKIPPED. Do not add them to dependencies
-  to make a skip go away, and do not claim a skipped check passed.
+- **A skip is not a pass.** The two test-only packages are pinned devDependencies: `@electric-sql/pglite`
+  for the four database checks, and `react-test-renderer` for the check that mounts `useSearch`.
+  `npm ci` (or a full `npm install`) brings both in, so a normal clone never skips them. A tree
+  missing one of them reports SKIPPED for the affected checks — fix the install, do not claim the
+  skipped check passed.
 - **The gate is portable.** `npm run smoke` runs on Windows as well as Linux and macOS, so a red
   run is your change, not the platform.
 - **Never weaken a check to get green.** No skipped assertions, no widened tolerances, no

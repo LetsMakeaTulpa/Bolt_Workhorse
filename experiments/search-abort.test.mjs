@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 // The local esbuild JS entry point is run under node directly: spawning `npx` through cmd.exe
 // strips the quotes in --define and turns the value into invalid JSON.
-const DIR = (process.env.ABORT_DIR ?? tmpPath('')).replaceAll('\\', '/');
+const DIR = (process.env.ABORT_DIR ?? tmpPath('search-abort')).replaceAll('\\', '/');
 const API = `${DIR}/fieldwork-abort-api.mjs`;
 const CLIENT = `${DIR}/fieldwork-abort-client.mjs`;
 const GUARD = `${DIR}/fieldwork-abort-guard.mjs`;

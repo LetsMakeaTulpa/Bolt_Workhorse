@@ -86,6 +86,8 @@ export function useSearch({
   const guardRef = useRef<RunGuard | null>(null);
   if (guardRef.current === null) guardRef.current = new RunGuard();
   const guard = guardRef.current;
+  /** the run was stopped by the stop control, not replaced by a newer one */
+  const cancelledRef = useRef(false);
 
   const engineSignature = engines.join(',');
 
@@ -115,14 +117,17 @@ export function useSearch({
   }, []);
 
   const performSearch = useCallback(
-    async (query: string, convId: string): Promise<Source[]> => {
+    async (query: string, convId: string, options: { keepStreaming?: boolean } = {}): Promise<Source[]> => {
       // a new search owns the result list: supersede the previous run so a slow engine cannot
       // overwrite fresher results when it finally answers
+      cancelledRef.current = false;
       const run = guard.begin();
       const controller = run.controller;
       const isCurrent = run.isCurrent;
-      // and an answer still streaming from the previous question is about to be stale too
-      abortStream();
+      // an answer still streaming from the previous question is about to be stale — unless this
+      // search IS the running answer asking for a second pass, in which case killing it stops the
+      // very turn that requested the search
+      if (!options.keepStreaming) abortStream();
 
       setIsSearching(true);
       setLastQuery(query);
@@ -244,6 +249,21 @@ export function useSearch({
         });
         await logActivity(convId, 'deduplicate', `Deduplicated and scored ${fused.length} unique sources`);
 
+        // the function reads the top pages itself; saying so keeps "where did that number come from"
+        // answerable from the trail
+        const extraction = serverResponse?.extraction;
+        if (extraction && extraction.requested > 0) {
+          await logActivity(
+            convId,
+            'analyze',
+            extraction.extracted > 0
+              ? `Read the full text of ${extraction.extracted} page${extraction.extracted === 1 ? '' : 's'} (${extraction.chars.toLocaleString()} chars)`
+              : `No page text could be read for the top ${extraction.requested} sources`,
+            { extraction },
+            'completed',
+          );
+        }
+
         if (fused.length > 0) await saveSources(convId, fused, query);
 
         // Update the search activity to completed
@@ -277,9 +297,15 @@ export function useSearch({
   /** true when the run that just finished was superseded or cancelled: its answer is stale */
   const runAborted = useCallback(() => guard.aborted, [guard]);
 
+  /** true when a person pressed stop, rather than a newer run replacing this one */
+  const runCancelled = useCallback(() => cancelledRef.current, []);
+
   const cancelSearch = useCallback(() => {
     // superseding, not merely aborting: the signal alone cannot stop an engine that ignores it
     if (!guard.supersede()) return false;
+    // a person stopped this run; the turn asking for it has to know that, so it can say so instead
+    // of exiting as though a newer run had taken over
+    cancelledRef.current = true;
     setStatus('Search cancelled');
     setIsSearching(false);
     return true;
@@ -439,6 +465,7 @@ export function useSearch({
     cancelSearch,
     runLane,
     runAborted,
+    runCancelled,
     clearResults,
   };
 }

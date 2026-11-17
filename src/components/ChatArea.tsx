@@ -8,6 +8,7 @@ import type { EngineIssue } from '../lib/engines';
 import type { PromptVariantStatus } from '../lib/promptVariant';
 import type { LaneYield } from '../lib/fusion';
 import { LaneYieldRow } from './LaneYieldRow';
+import { ModelNoticeBanner, type ModelNotice } from './ModelNotice';
 
 interface ChatAreaProps {
   messages: Message[];
@@ -47,6 +48,9 @@ interface ChatAreaProps {
   onRetrySearch?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
+  /** what answered, when it was not the selected model — shown above the transcript, not only logged */
+  modelNotice?: ModelNotice | null;
+  onDismissModelNotice?: () => void;
 }
 
 export function ChatArea({
@@ -78,9 +82,12 @@ export function ChatArea({
   onRetrySearch,
   onSaveResults,
   onFollowUp,
+  modelNotice,
+  onDismissModelNotice,
 }: ChatAreaProps) {
   return (
     <div className="flex h-full flex-col">
+      {modelNotice && <ModelNoticeBanner notice={modelNotice} onDismiss={onDismissModelNotice} />}
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <WelcomeScreen onSendMessage={onSendMessage} />
@@ -104,7 +111,7 @@ export function ChatArea({
             {isSearching && (
               <div className="mb-4 flex items-center gap-2 rounded-lg border border-olive/30 bg-olive-subtle px-4 py-2.5 text-xs text-olive animate-fade-in">
                 <Loader2 size={14} className="animate-spin" />
-                <span>{searchLabel || 'Searching across multiple engines with semantic query compilation and RRF ranking...'}</span>
+                <span>{searchLabel || 'Searching the web for this answer…'}</span>
               </div>
             )}
             <div ref={messagesEndRef} />

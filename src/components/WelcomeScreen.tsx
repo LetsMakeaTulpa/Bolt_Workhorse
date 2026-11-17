@@ -5,8 +5,8 @@ interface WelcomeScreenProps {
 }
 
 /**
- * Search-first landing: the composer below is the product, so this is a short invitation and a few
- * deep-web shaped examples rather than a catalogue of features.
+ * The first thing the app says when there is no conversation yet: an invitation to ask. The search
+ * engines, dorks and source panel are what the answers are built on, not what the page is.
  */
 const EXAMPLES = [
   {
@@ -16,17 +16,17 @@ const EXAMPLES = [
   },
   {
     icon: Archive,
-    label: 'Lost',
+    label: 'Archived',
     prompt: 'What vanished when GeoCities shut down, and what is still archived?',
   },
   {
     icon: EyeOff,
-    label: 'Hidden',
+    label: 'Obscure',
     prompt: 'Which 1990s BBS archives still exist for early cryptography discussion?',
   },
   {
     icon: FileSearch,
-    label: 'Records',
+    label: 'Literature',
     prompt: 'Find retracted papers in my field from the last two years and why they were pulled',
   },
 ];
@@ -38,9 +38,10 @@ export function WelcomeScreen({ onSendMessage }: WelcomeScreenProps) {
         <Compass size={24} className="text-bg-base" />
       </div>
 
-      <h1 className="mb-1 text-2xl font-bold tracking-tight text-text-primary">What are you hunting?</h1>
+      <h1 className="mb-1 text-2xl font-bold tracking-tight text-text-primary">Ask. Then ask again.</h1>
       <p className="mb-7 max-w-md text-center text-sm text-text-secondary">
-        One search across the live web, deep archives and onion indexes — ranked together, then summarised.
+        A research chat: the answer streams in, the web is searched behind it, and the top pages are
+        read in full when a snippet is not enough. Follow up on any answer without repeating yourself.
       </p>
 
       <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
@@ -70,7 +71,7 @@ export function WelcomeScreen({ onSendMessage }: WelcomeScreenProps) {
       </div>
 
       <p className="mt-6 text-[11px] text-text-muted">
-        Press <span className="font-mono text-text-secondary">/</span> to search · pick Recent, Deep, Lost or Dark above
+        Press <span className="font-mono text-text-secondary">/</span> to type · every answer keeps its sources, and you can ask a follow-up on any of them
       </p>
     </div>
   );

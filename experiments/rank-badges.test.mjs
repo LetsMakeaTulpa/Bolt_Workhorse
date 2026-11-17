@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 // the local esbuild entry point under node directly: `npx` cannot be spawned from cmd.exe
-const DIR = (process.env.BADGES_DIR ?? tmpPath('')).replaceAll('\\', '/');
+const DIR = (process.env.BADGES_DIR ?? tmpPath('rank-badges')).replaceAll('\\', '/');
 const OUT = `${DIR}/fieldwork-rank-explain.mjs`;
 const FUSION = `${DIR}/fieldwork-rank-fusion.mjs`;
 const build = (entry, out) =>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square, FileText } from 'lucide-react';
+import { Sparkles, ArrowUp, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square, FileText } from 'lucide-react';
 import { ANSWER_BUDGET_WORDS, type PromptVariantStatus } from '../lib/promptVariant';
 import { DORK_ENGINE_NOTE, DORK_OPERATORS, DORK_TEMPLATES } from '../lib/dorks';
 import { ENGINE_CATALOG, ENGINE_GROUPS, SEARCH_SCOPES, matchScope, type EngineIssue } from '../lib/engines';
@@ -90,7 +90,15 @@ export function SearchBar({
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [dorksOpen, setDorksOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // the box grows with the question instead of hiding the end of it
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
+  }, [query]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -98,7 +106,7 @@ export function SearchBar({
         setOpen(false);
         setDorksOpen(false);
       }
-      // the search box is the product: one keystroke back to it from anywhere
+      // every turn starts here: one keystroke back to the message box from anywhere
       const typing = /^(input|textarea)$/i.test((event.target as HTMLElement | null)?.tagName ?? '');
       if (!typing && (event.key === '/' || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'))) {
         event.preventDefault();
@@ -116,8 +124,11 @@ export function SearchBar({
   const activeScope = matchScope(engines);
 
   const submit = () => {
-    if (!query.trim() || disabled) return;
-    onSearch(query.trim());
+    const message = query.trim();
+    if (!message || disabled) return;
+    onSearch(message);
+    // a sent message leaves the box: the next turn starts with nothing in it
+    setQuery('');
   };
 
   const applyDork = (pattern: string) => {
@@ -151,21 +162,23 @@ export function SearchBar({
   return (
     <div className="mb-1">
       <div className="flex items-center gap-2 rounded-2xl border border-border bg-bg-elevated px-3 py-1.5 shadow-sm transition-colors focus-within:border-accent/50">
-        <Search size={16} className="flex-shrink-0 text-text-muted" />
-        <input
+        <Sparkles size={16} className="flex-shrink-0 text-text-muted" />
+        <textarea
           ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            // Enter sends and Shift+Enter starts a new line, like every other chat box
+            if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               submit();
             }
           }}
-          placeholder="Search the open, deep and dark web…"
+          rows={1}
+          placeholder="Ask a question — the web is searched behind the answer…"
           disabled={disabled}
-          className="w-full min-w-0 flex-1 bg-transparent py-2 text-sm text-text-primary placeholder-text-muted outline-none disabled:opacity-40"
-          aria-label="Search query"
+          className="max-h-[168px] w-full min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-text-primary placeholder-text-muted outline-none disabled:opacity-40"
+          aria-label="Ask a question"
         />
         {query ? (
           <button
@@ -197,11 +210,11 @@ export function SearchBar({
         <button
           onClick={submit}
           disabled={disabled || !query.trim()}
-          title={searching ? 'Replace the running search' : undefined}
+          title={searching ? 'Replace the running answer' : 'Send (Enter)'}
           className="flex flex-shrink-0 items-center gap-1.5 rounded-xl bg-olive px-3.5 py-2 text-xs font-semibold text-bg-deep transition-colors hover:bg-olive-hover disabled:cursor-not-allowed disabled:opacity-30"
         >
-          {disabled || searching ? <Loader2 size={13} className={searching ? 'animate-spin' : ''} /> : <Search size={13} />}
-          <span>{rawOnly ? 'Collect' : 'Search'}</span>
+          {disabled || searching ? <Loader2 size={13} className={searching ? 'animate-spin' : ''} /> : <ArrowUp size={13} />}
+          <span>{rawOnly ? 'Collect' : 'Send'}</span>
         </button>
       </div>
 
@@ -425,7 +438,7 @@ export function SearchBar({
           onClick={() => onRawOnlyChange?.(!rawOnly)}
           disabled={disabled || !onRawOnlyChange}
           aria-pressed={Boolean(rawOnly)}
-          title="Raw results only — collect and rank sources in the panel without asking the model"
+          title="Sources only — collect and rank them in the panel without asking for an answer"
           className={`flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${
             rawOnly
               ? 'border-accent/40 bg-accent-subtle text-accent'
@@ -433,7 +446,7 @@ export function SearchBar({
           }`}
         >
           <span className={`h-1.5 w-1.5 rounded-full ${rawOnly ? 'bg-accent' : 'bg-text-muted/50'}`} />
-          Raw
+          Sources only
         </button>
       </div>
     </div>

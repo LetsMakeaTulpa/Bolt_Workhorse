@@ -39,6 +39,10 @@ export interface Source {
   engines?: string[];
   /** IDF-weighted query coverage, 0-1 */
   relevance?: number;
+  /** full page text, when this source was among the top results the function read */
+  content?: string;
+  /** which extractor read the page: 'fetch' or 'firecrawl' */
+  content_source?: string;
 }
 
 export interface SourceRecord {
@@ -163,5 +167,13 @@ export interface SearchResponse {
   preset: string;
   /** absent on functions deployed before per-engine diagnostics existed */
   engine_status?: EngineStatus[];
+  /** what the fetch-and-extract stage did; absent on functions deployed before it existed */
+  extraction?: {
+    limit: number;
+    requested: number;
+    extracted: number;
+    chars: number;
+    failures: { url: string; error: string }[];
+  } | null;
   results: Source[];
 }

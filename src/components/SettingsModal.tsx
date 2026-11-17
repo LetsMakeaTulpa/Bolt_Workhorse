@@ -10,6 +10,7 @@ import {
   readPromptVariant,
   savePromptVariant,
 } from '../lib/promptVariant';
+import { describeEmptyResultBlock } from '../lib/emptyResultPref';
 import { X, Layers, Cpu, Globe, Shield, Key, RotateCcw, Loader2, Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
@@ -20,6 +21,9 @@ interface SettingsModalProps {
   onClose: () => void;
   /** signed-in account; provider keys are stored per user */
   userId?: string;
+  /** whether a search that found nothing ends in a gap report instead of an answer */
+  emptyResultBlock: boolean;
+  onEmptyResultBlockChange: (enabled: boolean) => void;
 }
 
 const ENGINE_DESCRIPTIONS: Record<string, string> = {
@@ -31,7 +35,15 @@ const ENGINE_DESCRIPTIONS: Record<string, string> = {
   openalex: 'Scholarly works and research metadata',
 };
 
-export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose, userId }: SettingsModalProps) {
+export function SettingsModal({
+  presets,
+  selectedPreset,
+  onSelectPreset,
+  onClose,
+  userId,
+  emptyResultBlock,
+  onEmptyResultBlockChange,
+}: SettingsModalProps) {
   const current = presets.find((p) => p.name === selectedPreset);
   const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null);
   const [defaultModel, setDefaultModel] = useState('');
@@ -282,6 +294,42 @@ export function SettingsModal({ presets, selectedPreset, onSelectPreset, onClose
                 Stored on this device for this account only. Variants are not saved to your account, so a bad one cannot
                 follow you to another machine. The built-in prompt states a {ANSWER_BUDGET_WORDS}-word ceiling, a claim
                 ledger and citation rules — a variant that drops them changes what an answer is, not just its tone.
+              </p>
+            </div>
+          </div>
+
+          {/* Empty-result block — the switch that lets a search-less answer through */}
+          <div>
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              When a search finds nothing
+            </label>
+            <div className="rounded-lg border border-border-subtle bg-bg-elevated p-3">
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={emptyResultBlock}
+                  aria-label="Empty-result block"
+                  onClick={() => onEmptyResultBlockChange(!emptyResultBlock)}
+                  className={`relative h-5 w-9 flex-shrink-0 rounded-full border transition-colors ${
+                    emptyResultBlock
+                      ? 'border-olive/40 bg-olive-subtle'
+                      : 'border-border-subtle bg-bg-hover'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all ${
+                      emptyResultBlock ? 'left-[18px] bg-olive' : 'left-0.5 bg-text-muted'
+                    }`}
+                  />
+                </button>
+                <span className="flex-1 text-[11px] text-text-secondary">{describeEmptyResultBlock(emptyResultBlock)}</span>
+              </div>
+              <p className="mt-1.5 text-[10px] text-text-muted">
+                On is the honest default: the turn ends in a gap report naming which engines and lanes came back empty,
+                and no answer is invented around the absence. Off lets the model answer from its own knowledge instead —
+                the gaps are not logged and no \u201cnot backed by retrieved sources\u201d line is added, but it is still told
+                not to invent URLs, titles or citation IDs. Stored on this device.
               </p>
             </div>
           </div>

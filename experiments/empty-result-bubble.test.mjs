@@ -79,6 +79,30 @@ check('render: lanes stay hidden until opened', !/Exposed files/.test(gap));
 const answer = render({ message: message('The sources agree on one point [1].'), query: 'anything', onRetrySearch: () => {}, onRunLane: () => {} });
 check('render: a normal answer offers no buttons', !/Broader:/.test(answer) && !/Run a lane/.test(answer));
 
+// 5. an answer with nothing behind it carries a badge, not only a log line
+const unverified = render({ message: { ...message('The model answered on its own.'), search_results: [] } });
+check('render: an unsourced answer is badged', /Unverified — no sources retrieved/.test(unverified), 'badge text');
+check('render: the badge explains itself on hover', /The search ran and collected nothing/.test(unverified), 'tooltip');
+check('render: the answer is still shown under the badge', /The model answered on its own/.test(unverified));
+
+const sourced = render({
+  message: {
+    ...message('Grounded answer [1].'),
+    search_results: [{ title: 'A paper', url: 'https://example.org/a', snippet: 's', source_engine: 'exa', citation_id: '[1]' }],
+  },
+});
+check('render: an answer with a source is not badged', !/Unverified/.test(sourced));
+
+const searchOff = render({ message: { ...message('Plain answer, no search run.'), search_enabled: false, search_results: [] } });
+check('render: search off is not unverified', !/Unverified/.test(searchOff));
+
+const userTurn = render({ message: { ...message('my question', 'user'), search_results: [] } });
+check('render: a question is never badged', !/Unverified/.test(userTurn));
+
+// a gap report already states that nothing was found, so the badge would only repeat it
+const gapBadge = render({ message: { ...message(failed), search_results: [] }, query: 'site:tesla.com filetype:pdf investor deck' });
+check('render: the gap report is not double-labelled', /<strong>No sources\.<\/strong>/.test(gapBadge) && !/Unverified/.test(gapBadge));
+
 // 5. the user's own turn is never given buttons, even if it quotes the report
 const echoed = render({ message: message('**No sources.** what happened?', 'user'), query: 'q', onRetrySearch: () => {}, onRunLane: () => {} });
 check('render: a user message gets no buttons', !/Broader:/.test(echoed) && !/Run a lane/.test(echoed));

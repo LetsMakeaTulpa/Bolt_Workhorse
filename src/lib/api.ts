@@ -141,10 +141,15 @@ async function readChatError(resp: Response): Promise<string> {
 
 export interface ChatStreamCallbacks {
   onToken: (token: string) => void;
-  onDone: (fullContent: string) => void;
+  onDone: (fullContent: string, toolCalls?: ToolCall[]) => void;
   onError: (error: string) => void;
   /** Fired when the primary model could not answer and the next candidate took over. */
   onModelSwitch?: (from: string, to: string, reason: string) => void;
+  /**
+   * Fired once per attempt when the provider's own `model` field names something other than the
+   * model that was requested — the answer is not from the model the UI says it is.
+   */
+  onModelServed?: (requested: string, served: string) => void;
   /** Fired instead of onDone/onError when the caller aborted: `partial` is what had streamed. */
   onAbort?: (partial: string) => void;
 }
@@ -292,10 +297,64 @@ interface AttemptResult {
   retryable: boolean;
   /** the caller cancelled: not a failure, so it must not trigger a fallback or an error toast */
   aborted?: boolean;
+  /** tools the model asked to call this turn, in the order the stream carried them */
+  toolCalls?: ToolCall[];
 }
 
 const wasAborted = (signal?: AbortSignal, error?: unknown): boolean =>
   Boolean(signal?.aborted) || (error instanceof DOMException && error.name === 'AbortError');
+
+/** A tool the model may call, in the OpenAI shape the proxy forwards untouched. */
+export interface ChatTool {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}
+
+/** One call the model asked for, reassembled from the streamed deltas. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  /** the arguments as the model wrote them, still a JSON string */
+  arguments: string;
+}
+
+/**
+ * The tool itself: the model may search again when the sources it was handed do not answer.
+ *
+ * One shot retrieval assumes the first query is the right one. It often is not — the answer needs a
+ * paper the fusion list did not reach, or a term the first pass spelled differently — and the model
+ * has no way to say so. This gives it that way, with the same engines the app uses.
+ */
+export const SEARCH_TOOL: ChatTool = {
+  type: 'function',
+  function: {
+    name: 'search_web',
+    description:
+      'Search the web again. Use it when the sources already provided do not answer the question, are too few, or miss the specific thing asked for. Each call runs the real search engines and returns fresh results.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query. Be specific; operators are allowed.' },
+      },
+      required: ['query'],
+    },
+  },
+};
+
+/**
+ * Whether a stream chunk's `model` names a different model than the one requested.
+ *
+ * The OpenAI-shaped stream repeats `model` on every chunk, but nothing obliges the provider to echo
+ * back the id it was given: an alias, a queue fallback under load, or a capability downgrade can all
+ * answer as a different model. Comparison is on the trimmed, case-folded id, because the field is a
+ * provider's own spelling of it; an empty or missing field claims nothing and is not a mismatch.
+ */
+export function servedModelMismatch(requested: string, served: string | null | undefined): boolean {
+  const asked = String(requested ?? '').trim();
+  const got = String(served ?? '').trim();
+  if (!asked || !got) return false;
+  return got.toLowerCase() !== asked.toLowerCase();
+}
 
 /** One model, one stream. Never reports failure itself — the caller decides whether to fall back. */
 async function streamAttempt(
@@ -304,15 +363,20 @@ async function streamAttempt(
   callbacks: ChatStreamCallbacks,
   temperature?: number,
   signal?: AbortSignal,
+  tools?: ChatTool[],
 ): Promise<AttemptResult> {
   // declared outside the try so a cancel can hand back what already streamed
   let content = '';
   let tokens = 0;
+  // one warning per attempt: every chunk repeats the model, and a per-chunk warning is noise
+  let servedWarned = false;
+  // tool calls arrive as deltas keyed by index: the name and id come once, the arguments in pieces
+  const pendingCalls = new Map();
   try {
     const resp = await fetch(`${SUPABASE_URL}/functions/v1/llm-proxy/chat`, {
       method: 'POST',
       headers: await proxyHeaders(),
-      body: JSON.stringify({ model, messages, stream: true, temperature }),
+      body: JSON.stringify({ model, messages, stream: true, temperature, ...(tools && tools.length ? { tools } : {}) }),
       signal,
     });
 
@@ -363,6 +427,20 @@ async function streamAttempt(
         }
         try {
           const parsed = JSON.parse(dataStr);
+          // the provider names the model it actually ran; say so once if it is not the one asked for
+          if (!servedWarned && servedModelMismatch(model, parsed?.model)) {
+            servedWarned = true;
+            console.warn(`llm-proxy served ${parsed.model} for requested ${model}`);
+            callbacks.onModelServed?.(model, String(parsed.model).trim());
+          }
+          for (const delta of parsed?.choices?.[0]?.delta?.tool_calls ?? []) {
+            const index = Number(delta?.index ?? 0);
+            const call = pendingCalls.get(index) ?? { id: '', name: '', arguments: '' };
+            if (delta?.id) call.id = String(delta.id);
+            if (delta?.function?.name) call.name = String(delta.function.name);
+            if (delta?.function?.arguments) call.arguments += String(delta.function.arguments);
+            pendingCalls.set(index, call);
+          }
           const token = parsed?.choices?.[0]?.delta?.content ?? '';
           if (token) {
             content += token;
@@ -375,7 +453,13 @@ async function streamAttempt(
       }
     }
 
-    if (!content.trim()) {
+    const toolCalls = [...pendingCalls.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => call)
+      .filter((call) => call.name);
+
+    // a turn that ends in a tool call has no prose yet, and that is not an empty response
+    if (!content.trim() && toolCalls.length === 0) {
       return {
         ok: false,
         error: `${model} returned an empty response (likely at capacity)`,
@@ -384,7 +468,7 @@ async function streamAttempt(
         retryable: true,
       };
     }
-    return { ok: true, error: '', tokens, content, retryable: false };
+    return { ok: true, error: '', tokens, content, retryable: false, toolCalls };
   } catch (err) {
     if (wasAborted(signal, err)) {
       return { ok: false, error: 'Stopped', tokens, content, retryable: false, aborted: true };
@@ -392,6 +476,59 @@ async function streamAttempt(
     const message = err instanceof Error ? err.message : 'Unknown error';
     return { ok: false, error: message, tokens: 0, content: '', retryable: true };
   }
+}
+
+/** What one model turn produced: prose, tool calls, or a failure worth reporting. */
+export interface TurnResult {
+  ok: boolean;
+  content: string;
+  toolCalls: ToolCall[];
+  error: string;
+  aborted: boolean;
+}
+
+/**
+ * One model turn as a value rather than a callback stream.
+ *
+ * The search-tool loop makes several turns in a row and has to read each one before it can decide
+ * what the next should contain, so `onDone` is the wrong shape for it. Tokens still arrive through
+ * the same callbacks, so the UI streams exactly as it did before.
+ */
+export async function streamTurn(
+  model: string,
+  messages: { role: string; content: string }[],
+  callbacks: Pick<ChatStreamCallbacks, 'onToken' | 'onModelSwitch' | 'onModelServed'>,
+  options: { temperature?: number; fallbacks?: string[]; signal?: AbortSignal; tools?: ChatTool[] } = {},
+): Promise<TurnResult> {
+  let content = '';
+  let toolCalls: ToolCall[] = [];
+  let error = '';
+  let aborted = false;
+  await chatCompletion(
+    model,
+    messages,
+    {
+      onToken: callbacks.onToken,
+      onModelSwitch: callbacks.onModelSwitch,
+      onModelServed: callbacks.onModelServed,
+      onDone: (fullContent, calls) => {
+        content = fullContent;
+        toolCalls = calls ?? [];
+      },
+      onError: (message) => {
+        error = message;
+      },
+      onAbort: (partial) => {
+        aborted = true;
+        content = partial;
+      },
+    },
+    options.temperature,
+    options.fallbacks ?? [],
+    options.signal,
+    { tools: options.tools },
+  );
+  return { ok: !error && !aborted, content, toolCalls, error, aborted };
 }
 
 /**
@@ -406,6 +543,7 @@ export async function chatCompletion(
   temperature?: number,
   fallbacks: string[] = [],
   signal?: AbortSignal,
+  options: { tools?: ChatTool[] } = {},
 ) {
   const chain = [model, ...fallbacks.filter((candidate) => candidate && candidate !== model)];
   let lastError = `${model} is unavailable`;
@@ -415,7 +553,7 @@ export async function chatCompletion(
       callbacks.onAbort?.('');
       return;
     }
-    const attempt = await streamAttempt(current, messages, callbacks, temperature, signal);
+    const attempt = await streamAttempt(current, messages, callbacks, temperature, signal, options.tools);
     // a cancelled run owns no answer: no fallback, no error, no onDone
     if (attempt.aborted) {
       callbacks.onAbort?.(attempt.content);
@@ -423,7 +561,7 @@ export async function chatCompletion(
     }
     if (attempt.ok) {
       recordModelResult(current, true);
-      callbacks.onDone(attempt.content);
+      callbacks.onDone(attempt.content, attempt.toolCalls ?? []);
       return;
     }
 

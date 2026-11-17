@@ -43,19 +43,26 @@ export function InvestigationPanel({
 }: InvestigationPanelProps) {
   return (
     <aside className="flex w-80 flex-col border-l border-border-subtle bg-bg-deep">
+      {/* the way out of the panel, said in words: an unlabelled chevron among the tabs was invisible */}
+      <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-3 py-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Investigation</span>
+        <button
+          type="button"
+          onClick={onCollapse}
+          title="Collapse panel"
+          aria-label="Collapse panel"
+          className="flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:bg-bg-hover hover:text-text-primary"
+        >
+          <PanelRightClose size={13} />
+          <span>Collapse</span>
+        </button>
+      </div>
+
       <div className="flex items-center border-b border-border-subtle">
         <TabButton active={tab === 'map'} onClick={() => onTabChange('map')} icon={Radar} label="Map" count={searchResults.length} />
         <TabButton active={tab === 'activity'} onClick={() => onTabChange('activity')} icon={Activity} label="Activity" count={activityLogs.length} />
         <TabButton active={tab === 'sources'} onClick={() => onTabChange('sources')} icon={Globe} label="Sources" count={sources.length} />
         <TabButton active={tab === 'evidence'} onClick={() => onTabChange('evidence')} icon={Shield} label="Findings" count={findings.length} />
-        <button
-          onClick={onCollapse}
-          className="px-2 self-stretch text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-          title="Collapse panel"
-          aria-label="Collapse panel"
-        >
-          <PanelRightClose size={14} />
-        </button>
       </div>
 
       <div className={`flex-1 overflow-y-auto ${tab === 'map' ? '' : 'p-3'}`}>

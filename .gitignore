@@ -12,12 +12,18 @@ keys*.txt
 .preview-host
 .vite.pid
 
+# the export archive handed out for offline reading: regenerate, do not commit
+fieldwork-project.zip
+
 # local screenshots taken while checking the UI
 artifacts/
 
 # Supabase CLI cache
 supabase/.temp/
 
-# local Supabase credentials: never commit these
+# local credentials: never commit these. Vite loads .env, .env.local, .env.<mode> and
+# .env.<mode>.local, so one pattern covers every file that could hold a key; .env.example stays
+# committable because an example with placeholders is the one env file worth sharing
 .env
-.env.local
+.env.*
+!.env.example

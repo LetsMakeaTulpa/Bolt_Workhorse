@@ -1,22 +1,42 @@
 // Shared plumbing for the experiment suites: where to write a bundle, how to build one, and the
-// minimum WebSocket supabase-js insists on. Every suite used to hardcode /tmp, which Node reads as
-// C:\tmp on Windows, and to spawn `npx`, which cannot be spawned through cmd.exe. Neither is needed:
-// esbuild already ships with vite, and os.tmpdir() is correct on every platform.
+// minimum WebSocket supabase-js insists on.
+//
+// Bundles go inside the repo (`node_modules/.cache/fieldwork`), not the OS temp folder. This file
+// used to write to `os.tmpdir()`, which is correct per platform but wrong for this job on Windows:
+// it is one folder for the whole machine, so every worktree, every session and every concurrent run
+// shared the same fixed bundle names and overwrote each other's builds mid-test. Nothing was ever
+// cleaned up either — a week of runs leaves hundreds of `fieldwork-compare-*` folders behind. And
+// on a machine where %TEMP% is redirected, full or blocked by policy, every suite failed before its
+// first assertion. `node_modules` is already ours, already gitignored, and gets wiped by a fresh
+// install, which is the behaviour a build cache should have.
 import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-/** An absolute temp path with forward slashes, so it survives being pasted into a URL or a flag. */
-export const tmpPath = (name) => join(tmpdir(), name).replaceAll('\\', '/');
+/** The repo root, taken from this file's location so a suite runs from any working directory. */
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
+
+/** Where every bundle and scratch file goes: forward-slashed so it survives flags and URLs. */
+export const TMP_ROOT = join(ROOT, 'node_modules', '.cache', 'fieldwork').replaceAll('\\', '/');
+
+/**
+ * An absolute path inside the build cache, with the directory created.
+ *
+ * `tmpPath('dir')` names a directory the suite can fill itself; `tmpPath('x.mjs')` names a file.
+ */
+export const tmpPath = (name = '') => {
+  const full = join(TMP_ROOT, name).replaceAll('\\', '/');
+  mkdirSync(name ? dirname(full) : full, { recursive: true });
+  return full;
+};
 
 /** The esbuild binary that came with vite; run it under node so no shell is involved. */
-export const ESBUILD = fileURLToPath(new URL('../..', import.meta.url)).length
-  ? fileURLToPath(new URL('../../node_modules/esbuild/bin/esbuild', import.meta.url))
-  : 'esbuild';
+export const ESBUILD = fileURLToPath(new URL('../../node_modules/esbuild/bin/esbuild', import.meta.url));
 
 /** Build one entry point to `out`. Throws with the child's stderr rather than an ENOENT. */
 export function bundle(entry, out, extra = []) {
+  mkdirSync(dirname(out), { recursive: true });
   const args = [ESBUILD, entry, '--bundle', '--format=esm', `--outfile=${out}`, '--log-level=error', ...extra];
   execFileSync(process.execPath, args, { stdio: 'inherit' });
   return out;
@@ -24,6 +44,7 @@ export function bundle(entry, out, extra = []) {
 
 /** Build synchronously and capture the result, for suites that assert on a failure. */
 export function bundleSync(entry, out, extra = []) {
+  mkdirSync(dirname(out), { recursive: true });
   return spawnSync(process.execPath, [ESBUILD, entry, '--bundle', '--format=esm', `--outfile=${out}`, '--log-level=error', ...extra], {
     encoding: 'utf8',
   });

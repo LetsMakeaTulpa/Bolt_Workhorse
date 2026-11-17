@@ -214,21 +214,25 @@ summary (`npm run smoke -- --live` also probes the live database, read-only):
 npm run smoke
 ```
 
-It installs `@electric-sql/pglite` on demand (test-only, not saved to package.json) and reports
-**SKIP** rather than a pass when a check genuinely cannot run. The individual scripts are
-standalone too, and exit non-zero on failure:
+The two test-only packages it needs (`@electric-sql/pglite`, `react-test-renderer`) are pinned
+devDependencies, so `npm ci` installs everything the gate runs, and it reports **SKIP** rather than
+a pass when a check genuinely cannot run. The individual scripts are standalone too, and exit
+non-zero on failure:
 
 ```bash
-node experiments/app-config-lockdown.test.mjs   # needs @electric-sql/pglite (npm i --no-save)
+node experiments/app-config-lockdown.test.mjs   # needs @electric-sql/pglite (devDependency)
 node experiments/rls-write-audit.test.mjs
 node experiments/auth-rls.test.mjs              # two accounts, isolated
 node experiments/rate-limit.test.mjs            # proxy limiter + atomic windows
-npx esbuild src/lib/api.ts --bundle --format=esm --outfile=/tmp/api.mjs \
+# the same portable build the suites use: the esbuild that ships with vite, run under node,
+# written inside the repo — /tmp is C:\tmp to Windows, where nothing exists
+node node_modules/esbuild/bin/esbuild src/lib/api.ts --bundle --format=esm \
+  --outfile=node_modules/.cache/fieldwork/api.mjs \
   --define:import.meta.env.VITE_SUPABASE_URL='"https://proxy.test"' \
   --define:import.meta.env.VITE_SUPABASE_ANON_KEY='"anon"' \
 && node experiments/model-fallback.test.mjs
 bash experiments/rls-probe.sh                   # read-only probes against the live database
-node scripts/import-keys.mjs experiments/fixtures/keys-sample.txt --out-dir /tmp/keytest
+node scripts/import-keys.mjs experiments/fixtures/keys-sample.txt --out-dir node_modules/.cache/fieldwork/keys
 ```
 
 The rules behind this gate — what a skip means, how to add a check so it cannot drift from the code

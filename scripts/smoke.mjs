@@ -13,7 +13,7 @@
 // pass, and the exit code is non-zero if any check fails.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { bundle, tmpPath } from '../experiments/lib/build.mjs';
 
 const live = process.argv.includes('--live');
@@ -24,8 +24,6 @@ const skipped = [];
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 // a .cmd cannot be spawned without a shell on Windows, and `npm` is a shell builtin on neither side
 const needsShell = process.platform === 'win32';
-
-const asModulePath = (path) => `${process.cwd()}/${path}`.replaceAll('\\', '/');
 
 /** Run one check, capture its output, and report it as ok / FAILED with the tail of the log. */
 function run(name, command, args, { env = {}, shell = false } = {}) {
@@ -48,6 +46,13 @@ function run(name, command, args, { env = {}, shell = false } = {}) {
   return false;
 }
 
+/**
+ * A bundle path the test can import. Paths from `tmpPath()` are already absolute and only need
+ * their separators normalised; prefixing the working directory onto one would build
+ * `C:/proj/C:/Users/...`, which is not a path on Windows and not a file anywhere.
+ */
+const asModulePath = (path) => (isAbsolute(path) ? path : `${process.cwd()}/${path}`).replaceAll('\\', '/');
+
 const nodeTest = (name, script, env) => run(name, process.execPath, [script], { env });
 
 function skip(name, reason) {
@@ -55,10 +60,11 @@ function skip(name, reason) {
   console.log(`→ ${name}\n  SKIPPED (${reason})`);
 }
 
-/** `npm install --no-save` for a test-only package; true when it ends up present. */
+/** A test-only package the local tree is missing; true when it ends up present. Both are pinned
+ * devDependencies, so a plain `npm ci` has them — this only rescues a partially installed tree. */
 function ensurePackage(dir, spec, name) {
   if (existsSync(join('node_modules', dir))) return true;
-  console.log(`→ installing ${name} (test-only, not saved)`);
+  console.log(`→ installing ${name} (test-only, missing from node_modules)`);
   run(`${name} install`, npmCommand, ['install', '--no-save', '--no-package-lock', spec], { shell: needsShell });
   // the install is scaffolding, not a check: drop it from the tally either way
   passed.pop();
@@ -87,6 +93,61 @@ nodeTest('exa/tavily pipeline', 'experiments/web-engine-pipeline.test.mjs');
 // ── 3. model fallback + reliability (the suite bundles the real api.ts) ──────
 nodeTest('model fallback chain', 'experiments/model-fallback.test.mjs');
 
+// ── 3b. the model the provider actually ran, not the one that was asked for ──
+nodeTest('served model mismatch', 'experiments/model-served.test.mjs');
+
+// ── 3c. and the same fact told where the answer is, not only in the activity log ──
+{
+  const notice = tmpPath('model-notice.mjs');
+  try {
+    bundle('src/components/ModelNotice.tsx', notice, ['--jsx=automatic', '--external:react', '--external:react-dom']);
+    nodeTest('model notice banner', 'experiments/model-notice.test.mjs', { MODEL_NOTICE_MODULE: notice });
+  } catch (err) {
+    failed.push('model notice banner');
+    console.log(`→ model notice banner\n  FAILED\n    ${err.message}`);
+  }
+}
+
+// ── 3d. the model can ask for another search, and the loop stops it searching forever ──
+{
+  const apiOut = tmpPath('api-search-tool.mjs');
+  const loopOut = tmpPath('search-tool.mjs');
+  try {
+    bundle('src/lib/api.ts', apiOut, [
+      '--define:import.meta.env.VITE_SUPABASE_URL="https://proxy.test"',
+      '--define:import.meta.env.VITE_SUPABASE_ANON_KEY="anon"',
+    ]);
+    bundle('src/lib/searchTool.ts', loopOut);
+    nodeTest('search tool loop', 'experiments/search-tool.test.mjs', {
+      API_MODULE: apiOut,
+      SEARCH_TOOL_MODULE: loopOut,
+    });
+  } catch (err) {
+    failed.push('search tool loop');
+    console.log(`→ search tool loop
+  FAILED
+    ${err.message}`);
+  }
+}
+
+// ── 3e. the top sources are read as pages, and a page that fails is not a search failure ──
+{
+  try {
+    // the suite bundles its own modules when given no paths; these are only to reuse the build
+    const extractOut = tmpPath('extract.mjs');
+    const contextOut = tmpPath('source-context.mjs');
+    bundle('supabase/functions/web-search/extract.ts', extractOut);
+    bundle('src/lib/sourceContext.ts', contextOut);
+    nodeTest('page extraction', 'experiments/extract.test.mjs', {
+      EXTRACT_MODULE: extractOut,
+      SOURCE_CONTEXT_MODULE: contextOut,
+    });
+  } catch (err) {
+    failed.push('page extraction');
+    console.log(`→ page extraction\n  FAILED\n    ${err.message}`);
+  }
+}
+
 // ── 4. the key importer classifies the sample dump and leaks nothing ─────────
 run('key importer', process.execPath, [
   'scripts/import-keys.mjs',
@@ -109,12 +170,13 @@ run('ranking constants still separate', process.execPath, ['experiments/ranking-
 
 // ── 4g. a superseded search stops its requests instead of finishing ──────────
 nodeTest('search abort', 'experiments/search-abort.test.mjs');
+nodeTest('chat turn reliability', 'experiments/chat-reliability.test.mjs');
 
 // ── 4g2. the same property from the outside, through the rendered hook ───────
 if (existsSync(join('node_modules', 'react-test-renderer'))) {
   nodeTest('useSearch supersession', 'experiments/use-search-supersede.test.mjs');
 } else {
-  skip('useSearch supersession', 'react-test-renderer unavailable (npm install --no-save react-test-renderer@18.3.1)');
+  skip('useSearch supersession', 'react-test-renderer missing from node_modules (it is a devDependency: run npm install)');
 }
 
 // ── 4i. the composer shows which selected engines have a key ─────────────────
@@ -168,6 +230,9 @@ if (existsSync(join('node_modules', 'react-test-renderer'))) {
   }
 }
 
+// ── 4i4. the switch that lets a search-less answer through ──────────────────
+nodeTest('empty-result preference', 'experiments/empty-result-pref.test.mjs');
+
 // ── 4j–4n. the answer contract, the empty page, prompts, ranking, searxng ────
 nodeTest('system prompt', 'experiments/system-prompt.test.mjs');
 nodeTest('empty result', 'experiments/empty-result.test.mjs');
@@ -197,6 +262,8 @@ nodeTest('empty result', 'experiments/empty-result.test.mjs');
   }
 }
 nodeTest('prompt variant', 'experiments/prompt-variant.test.mjs');
+// ── 4p. the panel's collapse is remembered on the device ─────────────────────
+nodeTest('panel collapse preference', 'experiments/panel-pref.test.mjs');
 nodeTest('ranking compare', 'experiments/ranking-compare.test.mjs');
 // --check fails on an nDCG or margin regression against flat trust
 run('ranking benchmark', process.execPath, ['experiments/ranking-harness.mjs', '--check']);
@@ -210,7 +277,7 @@ if (ensurePackage('@electric-sql/pglite', '@electric-sql/pglite', 'PGlite')) {
   nodeTest('proxy rate limits', 'experiments/rate-limit.test.mjs');
 } else {
   for (const name of ['app_config lockdown', 'anon write privileges', 'per-user RLS isolation', 'proxy rate limits']) {
-    skip(name, 'PGlite unavailable (offline install failed)');
+    skip(name, '@electric-sql/pglite missing from node_modules (it is a devDependency: run npm install)');
   }
 }
 

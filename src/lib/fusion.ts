@@ -600,6 +600,11 @@ export function fuseResultsDetailed(
     const { lane: _lane, ...rep } = entity.rep;
     const engines = [...entity.engines];
     const mergedSnippet = entity.members.map((member) => member.snippet).find((snippet) => snippet && snippet.length > 0);
+    // when an engine and the extractor both know this page, the longer text is the one to keep
+    const mergedContent = entity.members
+      .map((member) => member.content)
+      .filter((content): content is string => Boolean(content))
+      .sort((a, b) => b.length - a.length)[0];
     return {
       ...rep,
       engines,
@@ -607,6 +612,7 @@ export function fuseResultsDetailed(
       relevance_score: entity.score,
       source_engine: engines.join('+'),
       snippet: mergedSnippet ?? entity.rep.snippet,
+      ...(mergedContent ?? entity.rep.content ? { content: mergedContent ?? entity.rep.content } : {}),
       citation_id: `[${index + 1}]`,
     };
   });

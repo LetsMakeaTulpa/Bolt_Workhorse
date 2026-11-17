@@ -13,8 +13,8 @@ const check = (name, ok, detail = '') => {
 };
 
 const STUB = `${process.cwd()}/experiments/fixtures/supabase-stub.mjs`.replaceAll('\\', '/');
-// the shared helper: the esbuild that ships with vite, run under node, output in os.tmpdir() — a
-// literal /tmp resolves to C:\tmp on Windows, where nothing was written
+// the shared helper: the esbuild that ships with vite, run under node, output in the repo's own
+// build cache — a literal /tmp resolves to C:\tmp on Windows, where nothing was written
 const OUT = (process.env.SEARXNG_MODULE ?? tmpPath('web-search-searxng.mjs')).replaceAll('\\', '/');
 
 bundle('supabase/functions/web-search/index.ts', OUT, [

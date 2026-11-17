@@ -1,0 +1,40 @@
+# The gate CONTRIBUTING.md describes, run where nobody can forget to run it.
+#
+# `npm run smoke` is the whole check: the tsc+vite build, every experiment suite, and the four
+# database checks against a real Postgres (PGlite). It exits non-zero on any failure. A skip is
+# reported as a skip, never as a pass, so the two test-only packages are devDependencies rather than
+# something installed beside the tree: `npm ci` brings them in, and `npm install` locally cannot
+# prune them away and quietly turn the database and hook-render checks into SKIPs.
+name: smoke
+
+on:
+  push:
+    branches: [main]
+
+# a newer push to main makes the older verdict stale; do not pay for both runs
+concurrency:
+  group: smoke-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # the lockfile is the pinned set: @electric-sql/pglite and react-test-renderer are in it,
+      # because an unpinned test-only package is a check that changes under you
+      - name: install dependencies
+        run: npm ci
+
+      - name: smoke
+        run: npm run smoke

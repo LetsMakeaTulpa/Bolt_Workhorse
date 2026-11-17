@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearch } from './hooks/useSearch';
 import { useEngineKeys } from './hooks/useEngineKeys';
 import { supabase } from './lib/supabase';
-import { fetchModels, chatCompletion, fallbackChain } from './lib/api';
+import { fetchModels, fallbackChain, SEARCH_TOOL, streamTurn, type ChatStreamCallbacks } from './lib/api';
+import { runSearchToolLoop, type ToolMessage } from './lib/searchTool';
 import { DEFAULT_ENGINES } from './lib/engines';
 import { describePromptVariant, readPromptVariant, systemPromptFor } from './lib/promptVariant';
 import { buildGapReport } from './lib/emptyResult';
@@ -13,12 +14,18 @@ import type {
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { InvestigationPanel, type PanelTab } from './components/InvestigationPanel';
+import type { ModelNotice } from './components/ModelNotice';
+import { readEmptyResultBlock, writeEmptyResultBlock } from './lib/emptyResultPref';
+import { formatSourceContext } from './lib/sourceContext';
+import { readPanelCollapsed, writePanelCollapsed } from './lib/panelPref';
 import { ModelSelector } from './components/ModelSelector';
 import { SettingsModal } from './components/SettingsModal';
 import { PresetSelector } from './components/PresetSelector';
 import { AuthScreen } from './components/AuthScreen';
 import type { Session } from '@supabase/supabase-js';
 import { Menu, Settings, Search, Compass, PanelRightClose, PanelRight, Activity, Globe, Shield, Radar, LogOut, Loader2 } from 'lucide-react';
+import { decideAfterSearch, STOPPED_SEARCH_NOTE } from './lib/turnDecision';
+import { insertRowTolerant, noteDroppedColumns } from './lib/messageInsert';
 
 const DEFAULT_MODEL = 'xortron/RESTRICTED-RESEARCH-MODEL';
 
@@ -32,6 +39,10 @@ export default function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
   const [isStreaming, setIsStreaming] = useState(false);
+  /** the model that answered, when it was not the one selected — shown above the transcript */
+  const [modelNotice, setModelNotice] = useState<ModelNotice | null>(null);
+  /** whether an empty search ends in the gap-report block or in an answer */
+  const [emptyResultBlock, setEmptyResultBlock] = useState(readEmptyResultBlock);
   const [searchEnabled, setSearchEnabled] = useState(true);
   const [engines, setEngines] = useState<string[]>(DEFAULT_ENGINES);
   /** the in-flight completion; stopping or replacing a run must stop the model too */
@@ -39,7 +50,9 @@ export default function App() {
   const [useDorks, setUseDorks] = useState(false);
   const [rawSearchOnly, setRawSearchOnly] = useState(false);
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [showSearchPanel, setShowSearchPanel] = useState(true);
+  // where the panel was left last time: a collapsed panel that reopens on every reload is a panel
+  // that has to be closed again on every reload
+  const [showSearchPanel, setShowSearchPanel] = useState(() => !readPanelCollapsed());
   const [panelTab, setPanelTab] = useState<PanelTab>('map');
   const [showSidebar, setShowSidebar] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
@@ -219,6 +232,8 @@ export default function App() {
       publication_date: r.published ?? '',
       relevance_score: r.relevance_score ?? 0,
       citation_id: r.citation_id ?? `[${i + 1}]`,
+      // the row records whether this source came back with page text or only a snippet
+      extraction_status: r.content ? 'extracted' : 'pending',
       source_type: r.source_engine === 'arxiv' || r.source_engine === 'openalex' ? 'academic' : 'web',
     }));
     const { data } = await supabase.from('sources').insert(rows).select();
@@ -226,6 +241,15 @@ export default function App() {
   };
 
   const abortStream = useCallback(() => streamRunRef.current?.abort(), []);
+
+  /** the newest question owns the transcript; an older turn steps aside instead of answering over it */
+  const turnRef = useRef(0);
+
+  /** Collapse or open the panel, and remember the choice on this device. */
+  const setPanelOpen = useCallback((open: boolean) => {
+    setShowSearchPanel(open);
+    writePanelCollapsed(!open);
+  }, []);
 
   // names only: the composer shows which providers are configured, never a value
   const {
@@ -247,6 +271,7 @@ export default function App() {
     cancelSearch: cancelSearchRun,
     runLane: handleRunLane,
     runAborted,
+    runCancelled,
     clearResults: clearSearchResults,
   } = useSearch({
     engines,
@@ -269,7 +294,12 @@ export default function App() {
 
   const handleSendMessage = async (content: string, options?: { forceSearch?: boolean }) => {
     if (!content.trim() || isStreaming) return;
+    // a notice belongs to the answer it describes, not to the next question
+    setModelNotice(null);
     const shouldSearch = searchEnabled || options?.forceSearch === true;
+    const turnId = turnRef.current + 1;
+    turnRef.current = turnId;
+    const turnSuperseded = () => turnRef.current !== turnId;
 
     let conv = currentConversation;
     if (!conv) {
@@ -301,12 +331,40 @@ export default function App() {
     let searchResultsData: Source[] = [];
     if (shouldSearch) {
       searchResultsData = await performSearch(content, conv.id);
-      // a newer search replaced this one, so this turn has nothing to answer with
-      if (runAborted()) return;
+      // A stopped or replaced search used to end the turn right here, with nothing under the
+      // question: that reads as the app not answering at all. Decide explicitly instead — answer
+      // from the model, say it was stopped, or (only when a newer question owns the screen) step
+      // aside without a word.
+      const afterSearch = decideAfterSearch({
+        aborted: runAborted(),
+        cancelled: runCancelled(),
+        superseded: turnSuperseded(),
+      });
+      if (afterSearch === 'silent') return;
+      if (afterSearch === 'stopped-note') {
+        await logActivity(conv.id, 'search', 'Search stopped before it returned a source', {}, 'completed');
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            conversation_id: conv.id,
+            role: 'assistant',
+            content: STOPPED_SEARCH_NOTE,
+            model: selectedModel,
+            search_enabled: searchEnabled,
+            search_results: [],
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+      if (runAborted()) {
+        await logActivity(conv.id, 'search', 'Search interrupted — answering from the model, unverified', {}, 'completed');
+      }
 
       // Chat with search built in: a thin search run informs the answer, it never replaces it. The
       // gaps are recorded and the model answers from its own knowledge, told to say it is unverified.
-      if (searchResultsData.length === 0) {
+      if (searchResultsData.length === 0 && emptyResultBlock) {
         const report = buildGapReport({
           query: content,
           engines,
@@ -333,17 +391,20 @@ export default function App() {
     }];
 
     if (searchResultsData.length > 0) {
-      const searchContext = searchResultsData
-        .map((r) => `${r.citation_id ?? ''} ${r.title}\nURL: ${r.url}\nProvider: ${r.source_engine}\nSnippet: ${r.snippet}`)
-        .join('\n\n');
+      // the top sources carry the text of the page itself, when it could be read
+      const searchContext = formatSourceContext(searchResultsData);
       llmMessages.push({
         role: 'system',
-        content: `Web search results for "${content}" (ranked by Reciprocal Rank Fusion):\n\n${searchContext}\n\nUse these sources to inform your response. Cite sources by their citation ID. Note the provider and assess source credibility.`,
+        content: `Web search results for "${content}" (ranked by Reciprocal Rank Fusion):\n\n${searchContext}\n\nUse these sources to inform your response. Cite sources by their citation ID. Note the provider and assess source credibility. Where page text is given, read it as the source itself: quote figures from it exactly, and prefer it over the snippet when the two differ.`,
       });
     } else if (shouldSearch) {
       llmMessages.push({
         role: 'system',
-        content: `Web search for "${content}" returned no usable sources this run (engines tried: ${engines.join(', ')}). Answer the question from your own knowledge. Do not invent URLs, titles or citation IDs, and state plainly that this answer is not backed by retrieved sources.`,
+        // with the block off the answer goes out undisclaimed, but never unguarded against invented
+        // citations
+        content: emptyResultBlock
+          ? `Web search for "${content}" returned no usable sources this run (engines tried: ${engines.join(', ')}). Answer the question from your own knowledge. Do not invent URLs, titles or citation IDs, and state plainly that this answer is not backed by retrieved sources.`
+          : `Web search for "${content}" returned no usable sources this run (engines tried: ${engines.join(', ')}), and you are answering without sources. Answer from your own knowledge. Do not invent URLs, titles or citation IDs.`,
       });
     }
 
@@ -380,9 +441,23 @@ export default function App() {
     const streamController = new AbortController();
     streamRunRef.current = streamController;
 
-    await chatCompletion(selectedModel, llmMessages, {
+    // the stream callbacks are unchanged; the search-tool loop below drives them turn by turn
+    const callbacks: ChatStreamCallbacks = {
+      onModelServed: (requested, served) => {
+        setModelNotice({ kind: 'served', from: requested, to: served });
+        // the answer is real, but it is not the model the picker says: record it rather than silently
+        // keeping the attribution the provider contradicted
+        void logActivity(
+          conv.id,
+          'analyze',
+          `Provider answered as ${served}, not ${requested} — this answer came from ${served}`,
+          { requested, served },
+          'completed',
+        );
+      },
       onModelSwitch: (from, to, reason) => {
         effectiveModel = to;
+        setModelNotice({ kind: 'fallback', from, to, reason });
         setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, model: to } : m)));
         void logActivity(conv.id, 'analyze', `${from} unavailable (${reason}) — answered on ${to}`, { from, to }, 'completed');
       },
@@ -395,11 +470,14 @@ export default function App() {
         setIsStreaming(false);
         setStreamingContent('');
 
-        const { data: savedMsg } = await supabase.from('messages').insert({
+        const { data: savedMsg, dropped } = await insertRowTolerant<Message>(supabase, 'messages', {
           conversation_id: conv!.id, role: 'assistant', content: finalContent,
           model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
           system_prompt: activePrompt,
-        }).select().single();
+        });
+        await noteDroppedColumns(dropped, async (message, detail) => {
+          await logActivity(conv!.id, 'analyze', message, detail, 'completed');
+        });
 
         // Save findings
         if (searchResultsData.length > 0 && savedMsg) {
@@ -440,10 +518,13 @@ export default function App() {
 
         // nothing streamed yet: a row that only says "stopped" would be noise in the transcript
         if (kept) {
-          await supabase.from('messages').insert({
+          const { dropped: stoppedDropped } = await insertRowTolerant<Message>(supabase, 'messages', {
             conversation_id: conv!.id, role: 'assistant', content: stopped,
             model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
             system_prompt: activePrompt,
+          });
+          await noteDroppedColumns(stoppedDropped, async (message, detail) => {
+            await logActivity(conv!.id, 'analyze', message, detail, 'completed');
           });
           await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv!.id);
         }
@@ -459,7 +540,59 @@ export default function App() {
             .eq('id', synthLog.id);
         }
       },
-    }, undefined, chain, streamController.signal);
+    };
+
+    // The model may search again when the first pass was thin. Each call runs the real engines and
+    // keeps streaming — performSearch normally aborts a running stream, so it is told not to.
+    let toolRun: Awaited<ReturnType<typeof runSearchToolLoop>>;
+    try {
+      toolRun = await runSearchToolLoop({
+      messages: llmMessages as ToolMessage[],
+      // with search off the model is not offered the tool at all
+      tools: searchEnabled ? [SEARCH_TOOL] : [],
+      maxSearches: 2,
+      onSearch: (query) => {
+        void logActivity(conv!.id, 'search', `Model searched again: "${query}"`, { query, tool: 'search_web' }, 'completed');
+      },
+      stream: (turnMessages, turnTools) =>
+        streamTurn(
+          selectedModel,
+          turnMessages,
+          { onToken: callbacks.onToken, onModelSwitch: callbacks.onModelSwitch, onModelServed: callbacks.onModelServed },
+          { fallbacks: chain, signal: streamController.signal, tools: turnTools },
+        ),
+      runSearch: async (query) => {
+        if (!searchEnabled) {
+          return { count: 0, text: 'Search is switched off for this turn. Answer from what you have.' };
+        }
+        const found = await performSearch(query, conv!.id, { keepStreaming: true });
+        if (found.length === 0) {
+          return { count: 0, text: `Search for "${query}" returned no usable sources. Answer with what you already have.` };
+        }
+        // the answer now has sources behind it: the bubble must stop saying otherwise, and the row
+        // that gets saved must remember them
+        searchResultsData = [...searchResultsData, ...found];
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, search_results: searchResultsData } : m)),
+        );
+        const block = formatSourceContext(found.slice(0, 8), { contentChars: 3000 });
+        return { count: found.length, text: `Search results for "${query}":\n\n${block}` };
+      },
+      });
+    } catch (error) {
+      // the composer is disabled while streaming, so an exception escaping here would leave the app
+      // unable to send anything at all — which reads as the model having stopped answering
+      setIsStreaming(false);
+      setStreamingContent('');
+      await logActivity(conv.id, 'synthesize', `Turn failed: ${error instanceof Error ? error.message : 'unknown error'}`, {}, 'failed');
+      callbacks.onError(error instanceof Error ? error.message : 'the request failed');
+      return;
+    }
+
+    if (toolRun.stoppedBy === 'aborted') await callbacks.onAbort?.(toolRun.content);
+    else if (toolRun.stoppedBy === 'error') callbacks.onError(toolRun.error ?? 'unknown error');
+    else await callbacks.onDone(toolRun.content);
+
   };
 
   const handleUpdateFindingStatus = async (id: string, status: 'saved' | 'shared' | 'discarded') => {
@@ -512,14 +645,21 @@ export default function App() {
     setPanelTab('sources');
   };
 
-  const handleSearch = async (query: string) => {
+  /**
+   * What the composer does with a typed message.
+   *
+   * This is a chat, so a message is a message: search runs because the Search switch is on, not
+   * because the text was typed into a box. "Sources only" is the one mode where a search is the
+   * request itself, and it says so on the button.
+   */
+  const handleComposerSend = async (query: string) => {
     // a running search does not block a new one: performSearch cancels it, so the newest query wins
     if (!query.trim() || isStreaming) return;
     if (rawSearchOnly) {
       await handleRawSearch(query);
       return;
     }
-    await handleSendMessage(query.trim(), { forceSearch: true });
+    await handleSendMessage(query.trim());
   };
 
   const handleSignOut = async () => {
@@ -599,10 +739,13 @@ export default function App() {
               <span className="hidden lg:inline">{searchEnabled ? 'Search On' : 'Search Off'}</span>
             </button>
             <button
-              onClick={() => setShowSearchPanel(!showSearchPanel)}
+              onClick={() => setPanelOpen(!showSearchPanel)}
               className={`rounded-lg p-1.5 transition-colors ${
                 showSearchPanel ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:bg-bg-hover'
               }`}
+              title={showSearchPanel ? 'Collapse panel' : 'Expand panel'}
+              aria-label={showSearchPanel ? 'Collapse panel' : 'Expand panel'}
+              aria-pressed={!showSearchPanel}
             >
               {showSearchPanel ? <PanelRightClose size={18} /> : <PanelRight size={18} />}
             </button>
@@ -633,7 +776,7 @@ export default function App() {
               isSearching={isSearching}
               messagesEndRef={messagesEndRef}
               presetName={selectedPreset}
-              onSearch={handleSearch}
+              onSearch={handleComposerSend}
               onRunLane={handleRunLane}
               onCancelSearch={cancelSearch}
               storedKeyNames={storedKeyNames}
@@ -654,6 +797,8 @@ export default function App() {
               onRetrySearch={handleRetrySearch}
               onSaveResults={handleSaveResults}
               onFollowUp={handleSendMessage}
+              modelNotice={modelNotice}
+              onDismissModelNotice={() => setModelNotice(null)}
             />
           </div>
 
@@ -670,18 +815,18 @@ export default function App() {
               gaps={
                 // an empty Sources panel names the same gaps the answer's gap report lists, so a
                 // dead search never leaves a page with nothing on it
-                lastSearchQuery
+                lastSearchQuery && emptyResultBlock
                   ? buildGapReport({ query: lastSearchQuery, engines, issues: engineIssues, laneYield }).gaps
                   : []
               }
               tab={panelTab}
               onTabChange={setPanelTab}
-              onCollapse={() => setShowSearchPanel(false)}
+              onCollapse={() => setPanelOpen(false)}
             />
           ) : (
             <aside className="flex w-11 flex-col items-center gap-1 border-l border-border-subtle bg-bg-deep py-2">
               <button
-                onClick={() => setShowSearchPanel(true)}
+                onClick={() => setPanelOpen(true)}
                 className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                 title="Expand investigation panel"
                 aria-label="Expand investigation panel"
@@ -699,7 +844,7 @@ export default function App() {
                   key={entry.id}
                   onClick={() => {
                     setPanelTab(entry.id);
-                    setShowSearchPanel(true);
+                    setPanelOpen(true);
                   }}
                   className="relative rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                   title={entry.label}
@@ -729,6 +874,11 @@ export default function App() {
             void refreshKeyNames();
           }}
           userId={session?.user?.id}
+          emptyResultBlock={emptyResultBlock}
+          onEmptyResultBlockChange={(enabled) => {
+            setEmptyResultBlock(enabled);
+            writeEmptyResultBlock(enabled);
+          }}
         />
       )}
     </div>

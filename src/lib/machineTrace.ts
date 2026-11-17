@@ -25,7 +25,13 @@ export interface MachineTrace {
   read: ReadSource[];
   /** queries the model ran itself, oldest first, deduplicated */
   extraSearches: string[];
-  /** false when the answer used neither page text nor its own search */
+  /** how many fused sources the prompt carried; null when the row predates the mark */
+  given: number | null;
+  /** how many fused sources the answer has in total — the panel lists all of them */
+  shown: number;
+  /** fused sources that never reached the model, so nobody can say it ignored them */
+  panelOnly: number;
+  /** false when there is nothing to disclose: no page text, no extra search, nothing withheld */
   anything: boolean;
 }
 
@@ -77,12 +83,35 @@ export function parseToolSearches(value: unknown): string[] {
   return queries;
 }
 
+/**
+ * The sources the prompt actually carried: the ones marked, or every stored source on a row written
+ * before the mark existed. A row that posted everything on its first search has all of them marked.
+ */
+export function usedSources(message: { search_results?: Source[] | null }): Source[] {
+  const results = message.search_results ?? [];
+  const given = results.filter((source) => source.in_prompt === true);
+  return given.length > 0 ? given : results;
+}
+
 /** Everything the transcript strip draws, from the stored message alone. */
 export function summarizeMachine(message: {
   search_results?: Source[] | null;
   tool_searches?: unknown;
 }): MachineTrace {
-  const read = readInFull(message.search_results ?? []);
+  const results = message.search_results ?? [];
+  const read = readInFull(results);
   const extraSearches = parseToolSearches(message.tool_searches);
-  return { read, extraSearches, anything: read.length > 0 || extraSearches.length > 0 };
+  // a row written before the mark carries no verdict: unknown, not "never shown"
+  const marked = results.filter((source) => typeof source.in_prompt === 'boolean');
+  const given = marked.length === 0 ? null : marked.filter((source) => source.in_prompt).length;
+  const shown = results.length;
+  const panelOnly = given === null ? 0 : Math.max(0, shown - given);
+  return {
+    read,
+    extraSearches,
+    given,
+    shown,
+    panelOnly,
+    anything: read.length > 0 || extraSearches.length > 0 || panelOnly > 0,
+  };
 }

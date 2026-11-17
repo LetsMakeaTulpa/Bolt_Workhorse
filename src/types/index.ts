@@ -45,6 +45,13 @@ export interface Source {
   content?: string;
   /** which extractor read the page: 'fetch' or 'firecrawl' */
   content_source?: string;
+  /**
+   * whether this source was put in front of the model at all. A run keeps every fused source for
+   * the panel but only the first eight of a follow-up search reach the prompt, so without this the
+   * transcript cannot tell "the model ignored it" from "the model never saw it". Absent on rows
+   * written before it was recorded — unknown, not "not shown".
+   */
+  in_prompt?: boolean;
 }
 
 export interface SourceRecord {

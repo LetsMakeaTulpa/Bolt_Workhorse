@@ -351,19 +351,35 @@ export default function App() {
           { superseded: replaced },
           'completed',
         );
+        const noteContent = replaced ? SUPERSEDED_SEARCH_NOTE : STOPPED_SEARCH_NOTE;
+        const localId = crypto.randomUUID();
         setMessages((prev) => [
           ...prev,
           {
-            id: crypto.randomUUID(),
+            id: localId,
             conversation_id: conv.id,
             role: 'assistant',
-            content: replaced ? SUPERSEDED_SEARCH_NOTE : STOPPED_SEARCH_NOTE,
+            content: noteContent,
             model: selectedModel,
             search_enabled: searchEnabled,
             search_results: [],
             created_at: new Date().toISOString(),
           },
         ]);
+        // The note is the only record that this turn happened. Kept in memory alone, a reload put
+        // the question back on screen with nothing under it and took the note's Retry with it —
+        // the exact state this decision exists to prevent.
+        const { data: savedNote } = await insertRowTolerant<Message>(supabase, 'messages', {
+          conversation_id: conv.id,
+          role: 'assistant',
+          content: noteContent,
+          model: selectedModel,
+          search_enabled: searchEnabled,
+          search_results: [],
+        });
+        if (savedNote?.id) {
+          setMessages((prev) => prev.map((m) => (m.id === localId ? { ...m, id: savedNote.id } : m)));
+        }
         return;
       }
       if (runAborted()) {
@@ -398,8 +414,12 @@ export default function App() {
       content: activePrompt,
     }];
 
+    // every source the prompt carries this turn; any other fused source stays in the panel only
+    const inPrompt = new Set<string>();
+
     if (searchResultsData.length > 0) {
       // the top sources carry the text of the page itself, when it could be read
+      for (const source of searchResultsData) inPrompt.add(source.url);
       const searchContext = formatSourceContext(searchResultsData);
       llmMessages.push({
         role: 'system',
@@ -428,6 +448,10 @@ export default function App() {
     // the model's own searches, so the transcript can show them and offer each query back
     let toolSearches: string[] = [];
     const assistantMsgId = crypto.randomUUID();
+    // the saved row records which sources the prompt carried, so the strip can say how many of the
+    // fused list the model actually read rather than leaving "ignored" and "never shown" alike
+    const storedResults = () =>
+      searchResultsData.map((source) => ({ ...source, in_prompt: inPrompt.has(source.url) }));
     const assistantMsg: Message = {
       id: assistantMsgId,
       conversation_id: conv.id,
@@ -435,7 +459,7 @@ export default function App() {
       content: '',
       model: selectedModel,
       search_enabled: searchEnabled,
-      search_results: searchResultsData,
+      search_results: storedResults(),
       tool_searches: toolSearches,
       created_at: new Date().toISOString(),
     };
@@ -483,7 +507,7 @@ export default function App() {
 
         const { data: savedMsg, dropped } = await insertRowTolerant<Message>(supabase, 'messages', {
           conversation_id: conv!.id, role: 'assistant', content: finalContent,
-          model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
+          model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
           system_prompt: activePrompt, tool_searches: toolSearches,
         });
         await noteDroppedColumns(dropped, async (message, detail) => {
@@ -531,7 +555,7 @@ export default function App() {
         if (kept) {
           const { dropped: stoppedDropped } = await insertRowTolerant<Message>(supabase, 'messages', {
             conversation_id: conv!.id, role: 'assistant', content: stopped,
-            model: effectiveModel, search_enabled: searchEnabled, search_results: searchResultsData,
+            model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
             system_prompt: activePrompt, tool_searches: toolSearches,
           });
           await noteDroppedColumns(stoppedDropped, async (message, detail) => {
@@ -587,9 +611,12 @@ export default function App() {
         // that gets saved must remember them
         searchResultsData = [...searchResultsData, ...found];
         setMessages((prev) =>
-          prev.map((m) => (m.id === assistantMsgId ? { ...m, search_results: searchResultsData } : m)),
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, search_results: storedResults() } : m)),
         );
-        const block = formatSourceContext(found.slice(0, 8), { contentChars: 3000 });
+        // only the first eight of a follow-up search reach the model; the rest are panel-only
+        const offered = found.slice(0, 8);
+        for (const source of offered) inPrompt.add(source.url);
+        const block = formatSourceContext(offered, { contentChars: 3000 });
         return { count: found.length, text: `Search results for "${query}":\n\n${block}` };
       },
       });

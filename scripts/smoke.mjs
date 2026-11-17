@@ -160,6 +160,9 @@ run('key importer', process.execPath, [
 nodeTest('engine status strip', 'experiments/engine-status-ui.test.mjs');
 nodeTest('fusion intent weighting', 'experiments/fusion-intent.test.mjs');
 nodeTest('follow-up parsing', 'experiments/followups.test.mjs');
+// the ledger is lifted out of the answer and drawn as a table: a parser drift either loses rows or
+// eats the prose above them, and neither is visible until someone reads the post closely
+nodeTest('claim ledger parsing', 'experiments/claim-ledger.test.mjs');
 nodeTest('provider key parsing', 'experiments/provider-keys.test.mjs');
 nodeTest('ranking badges', 'experiments/rank-badges.test.mjs');
 
@@ -173,6 +176,7 @@ nodeTest('search abort', 'experiments/search-abort.test.mjs');
 nodeTest('chat turn reliability', 'experiments/chat-reliability.test.mjs');
 nodeTest('answer grounding', 'experiments/grounding.test.mjs');
 nodeTest('machine trace', 'experiments/machine-trace.test.mjs');
+nodeTest('freshness receipt', 'experiments/freshness.test.mjs');
 
 // ── 4g2. the same property from the outside, through the rendered hook ───────
 if (existsSync(join('node_modules', 'react-test-renderer'))) {

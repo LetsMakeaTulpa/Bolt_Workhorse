@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Message, Source } from '../types';
-import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown, FileText, ShieldAlert } from 'lucide-react';
+import { User, Compass, Globe, ExternalLink, Search, Copy, Check, Share2, Bookmark, RotateCw, ArrowUpRight, ChevronDown, FileText, ShieldAlert, Layers, CalendarDays } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { splitFollowUps } from '../lib/followUps';
@@ -13,7 +13,8 @@ import { FIELDWORK_SYSTEM_PROMPT } from '../lib/systemPrompt';
 import { promptWordCount } from '../lib/promptVariant';
 import { describeUnverified, isUnverifiedAnswer } from '../lib/verification';
 import { checkGrounding } from '../lib/grounding';
-import { summarizeMachine } from '../lib/machineTrace';
+import { summarizeMachine, usedSources } from '../lib/machineTrace';
+import { freshnessOf } from '../lib/freshness';
 import { unansweredKind } from '../lib/turnDecision';
 import { blufOf, sameQuery } from '../lib/blufQuery';
 
@@ -70,6 +71,12 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
   // what the machine did for this answer: which pages were opened and read, and what the model
   // searched on its own when the first pass was thin
   const machine = useMemo(() => summarizeMachine(message), [message]);
+  // the date window of what the prompt carried: a recency question answered from old pages is the
+  // one case where the transcript should say so before the reader clicks through
+  const freshness = useMemo(
+    () => (isUser || isStreaming ? null : freshnessOf(usedSources(message), query ?? '')),
+    [message, query, isUser, isStreaming],
+  );
 
   // the answer's bottom line, as a query and as next questions. A post that ends with nothing to
   // press is a dead end, and the model's own FOLLOW-UPS section arrives often enough to rely on but
@@ -306,7 +313,9 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
           </div>
         )}
 
-        {!isUser && !isStreaming && machine.anything && (
+        {!isUser &&
+        !isStreaming &&
+        (machine.anything || (freshness !== null && (freshness.dated > 0 || freshness.stale))) && (
           <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
             {machine.read.length > 0 && (
               <span className="flex flex-wrap items-center gap-1">
@@ -326,6 +335,47 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
                     <ExternalLink size={8} className="flex-shrink-0" />
                   </a>
                 ))}
+              </span>
+            )}
+            {machine.panelOnly > 0 && (
+              <span
+                className="flex flex-wrap items-center gap-1"
+                title={`The prompt carried ${machine.given} of this answer's ${machine.shown} fused sources; the other ${machine.panelOnly} are listed in the panel but were never shown to the model`}
+              >
+                <Layers size={10} className="flex-shrink-0" />
+                <span className="uppercase tracking-wider">Given to the model</span>
+                <span className="font-mono text-text-secondary">{`${machine.given} of ${machine.shown}`}</span>
+                <span>{`· ${machine.panelOnly} panel-only`}</span>
+              </span>
+            )}
+            {freshness && (freshness.dated > 0 || freshness.stale) && (
+              <span
+                className="flex flex-wrap items-center gap-1"
+                title={
+                  freshness.dated === 0
+                    ? 'This query asks for recent material, but none of the sources carries a publication date'
+                    : freshness.stale
+                      ? `This query asks for recent material, and the newest dated source is ${freshness.newestAgeMonths} months old`
+                      : 'The publication dates of the sources the answer was given'
+                }
+              >
+                <CalendarDays size={10} className={`flex-shrink-0 ${freshness.stale ? 'text-warning' : ''}`} />
+                <span className={`uppercase tracking-wider ${freshness.stale ? 'text-warning' : ''}`}>
+                  Sources dated
+                </span>
+                {freshness.dated > 0 ? (
+                  <span className="font-mono text-text-secondary">{`${freshness.oldest} → ${freshness.newest}`}</span>
+                ) : (
+                  <span className="text-warning">none</span>
+                )}
+                {freshness.undated > 0 && <span>{`· ${freshness.undated} undated`}</span>}
+                {freshness.stale && (
+                  <span className="text-warning">
+                    {freshness.newestAgeMonths === null
+                      ? '· no date to judge recency by'
+                      : `· newest is ${freshness.newestAgeMonths}mo old`}
+                  </span>
+                )}
               </span>
             )}
             {machine.extraSearches.length > 0 && (

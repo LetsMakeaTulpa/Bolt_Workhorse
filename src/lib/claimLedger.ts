@@ -26,7 +26,8 @@ export interface ParsedLedger {
   claims: LedgerClaim[];
 }
 
-const HEADING = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*claim\s+ledger\s*(?:\*\*|__)?\s*:?\s*$/i;
+// the closing bold can sit before or after the colon: `**CLAIM LEDGER**` and `**CLAIM LEDGER:**`
+const HEADING = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*claim\s+ledger\s*:?\s*(?:\*\*|__)?\s*$/i;
 /** a following section, so the ledger stops where the answer does */
 const NEXT_HEADING = /^\s*(?:#{1,6}\s+\S|\*\*[^*]+\*\*\s*$|(?:follow[\s-]?ups?|sources|references)\b\s*:?\s*$)/i;
 const BULLET = /^\s*(?:[-*•]|\d+[.)])\s+/;
@@ -71,11 +72,15 @@ function rowFrom(line: string): LedgerClaim | null {
     return bare.length >= 3 ? { citation, claim: bare, verdict } : null;
   }
 
-  // a bullet: `- [1] claim — established`, with an em dash, en dash or spaced hyphen
-  const split = text.match(/^(.+?)\s+[—–]\s+(.+)$/) ?? text.match(/^(.+?)\s+-\s+(.+)$/);
-  if (split && VERDICT.test(split[2].trim())) {
+  // a bullet: `- [1] claim — established`, with an em dash, en dash or spaced hyphen. Greedy on the
+  // left, because the verdict is the last field: `Latency — not throughput — is the constraint —
+  // contested` must split at its final dash, not its first.
+  const split = text.match(/^(.+)\s+[—–]\s+(.+)$/) ?? text.match(/^(.+)\s+-\s+(.+)$/);
+  // the verdict is tidied first: a bullet whose whole line is bold ends in `Established.**`
+  const verdictText = split ? tidy(split[2]) : '';
+  if (split && VERDICT.test(verdictText)) {
     const { citation, claim } = withCitation(tidy(split[1]));
-    const verdict = tidy(split[2]).toLowerCase().match(VERDICT)![1] as LedgerVerdict;
+    const verdict = verdictText.toLowerCase().match(VERDICT)![1] as LedgerVerdict;
     return claim.length >= 3 ? { citation, claim, verdict } : null;
   }
 

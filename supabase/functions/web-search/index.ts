@@ -1,11 +1,22 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { mapExaResults, mapGrepHits, mapShodanMatches, mapTavilyResults } from "./parsers.ts";
 import { DEFAULT_EXTRACT_LIMIT, extractTopSources, type ExtractionSummary } from "./extract.ts";
+import {
+  RATE_LIMITED_MARKER,
+  checkLimits,
+  clientIp,
+  rateLimitedMessage,
+  retryAfterSeconds,
+  type Caller,
+  type Verdict,
+} from "./rateLimit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  // a refusal must be readable from the browser: Retry-After is what tells a client when to return
+  "Access-Control-Expose-Headers": "Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Scope",
 };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -464,6 +475,53 @@ const ahmiaEngine: SearchEngine = {
   },
 };
 
+/**
+ * The Wayback Machine, for queries that name a page or a domain.
+ *
+ * There is no full-text search behind it — the CDX index is a list of captures per URL — so the
+ * engine only answers when the query carries a URL or a bare domain, and returns nothing otherwise.
+ * A live page that has changed is exactly the case a general engine cannot serve: this returns the
+ * copy from the day it said what the answer needs.
+ */
+const waybackEngine: SearchEngine = {
+  name: 'wayback',
+  capabilities: ['archive', 'history', 'domains'],
+  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+    const raw = query.match(/https?:\/\/[^\s"']+|[a-z0-9-]+(?:\.[a-z0-9-]+)+/i)?.[0];
+    if (!raw) return [];
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const params = new URLSearchParams({
+        url,
+        output: 'json',
+        limit: String(Math.max(3, Math.min(maxResults, 10))),
+        filter: 'statuscode:200',
+        collapse: 'digest',
+        fl: 'timestamp,original,mimetype',
+      });
+      const resp = await fetch(`https://web.archive.org/cdx/search/cdx?${params.toString()}`, {
+        headers: { 'User-Agent': UA },
+      });
+      if (!resp.ok) return [];
+      const rows = await resp.json();
+      if (!Array.isArray(rows) || rows.length < 2) return [];
+      // the first row is the column header
+      return (rows.slice(1) as string[][]).map((row) => {
+        const [timestamp, original, mimetype] = row;
+        const date = `${timestamp.slice(0, 4)}-${timestamp.slice(4, 6)}-${timestamp.slice(6, 8)}`;
+        return {
+          title: `Wayback ${date}: ${original}`,
+          url: `https://web.archive.org/web/${timestamp}/${original}`,
+          snippet: `Archived copy from ${date}${mimetype ? ` (${mimetype})` : ''} — the page as it stood that day`,
+          source_engine: 'wayback',
+        };
+      });
+    } catch {
+      return [];
+    }
+  },
+};
+
 const crtshEngine: SearchEngine = {
   name: 'crtsh',
   capabilities: ['intel', 'domains', 'subdomains'],
@@ -566,17 +624,83 @@ export const ENGINES: Record<string, SearchEngine> = {
   grepapp: grepAppEngine,
   urlscan: urlscanEngine,
   ahmia: ahmiaEngine,
+  wayback: waybackEngine,
   crtsh: crtshEngine,
 };
 
-// ─── Semantic Query Compiler ─────────────────────────────────────
+// ─── Semantic Query Compiler (bounded, and reported) ─────────────
+
+/**
+ * The query compiler is the only place a search spends model credits before an engine runs, so it
+ * is bounded on every axis a runaway could take: one attempt, an abort when the provider is slow,
+ * a small completion budget, and a hard cap on how many queries come back. The report travels with
+ * the response so the activity trail can name the model that rewrote the question and what it cost
+ * — a hidden model call is also an unaccountable one.
+ */
+const COMPILER_MODEL = (Deno.env.get("SEARCH_COMPILER_MODEL") ?? "").trim() || "Qwen/Qwen2.5-7B-Instruct";
+const COMPILER_TIMEOUT_MS = Math.min(
+  60_000,
+  Math.max(10, Number(Deno.env.get("SEARCH_COMPILER_TIMEOUT_MS")) || 12_000),
+);
+const COMPILER_MAX_TOKENS = 220;
+/** More queries than this do not buy better coverage; they multiply the fan-out per engine. */
+export const MAX_COMPILED_QUERIES = 5;
+/** One query the engines are handed is one line of a model's prose; bound it like one. */
+export const MAX_QUERY_CHARS = 160;
+
+export interface CompilationReport {
+  model: string;
+  /** false when the compiler never reached the provider (disabled, or no key configured) */
+  ran: boolean;
+  reason: 'ok' | 'disabled' | 'no_key' | 'timeout' | 'error' | 'empty';
+  queries: string[];
+  duration_ms: number;
+  /** provider-reported tokens for this call, when it reported them */
+  tokens?: number;
+  detail?: string;
+}
+
+function compilationReport(partial: Partial<CompilationReport> & { queries: string[] }): CompilationReport {
+  return { model: COMPILER_MODEL, ran: false, reason: 'ok', duration_ms: 0, ...partial };
+}
+
+/**
+ * Turn the model's answer into queries the engines can use: strip list markers and quotes, drop a
+ * preamble line, de-duplicate, and cap both the count and each line's length. A model that ignores
+ * "one per line, no explanations" therefore costs a bounded fan-out instead of an unbounded one.
+ */
+export function tidyQueries(raw: string): string[] {
+  const seen = new Set<string>();
+  const queries: string[] = [];
+  for (const line of String(raw ?? '').split(/\r?\n/)) {
+    const cleaned = line
+      .replace(/^\s*(?:[-*•]|\d{1,2}[.)])\s*/, '')
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) continue;
+    // "Here are the queries:" is a lead-in, not a query: a query has no reason to end in a colon
+    if (/^(?:here|sure|certainly|these are|below are)\b/i.test(cleaned) || /:\s*$/.test(cleaned)) continue;
+    const bounded = cleaned.slice(0, MAX_QUERY_CHARS).trim();
+    const key = bounded.toLowerCase();
+    if (!bounded || seen.has(key)) continue;
+    seen.add(key);
+    queries.push(bounded);
+    if (queries.length >= MAX_COMPILED_QUERIES) break;
+  }
+  return queries;
+}
 
 async function compileQueries(
   question: string,
   preset: string,
   useDorks: boolean,
   apiKey: string,
-): Promise<string[]> {
+): Promise<{ queries: string[]; report: CompilationReport }> {
+  if (!apiKey) {
+    return { queries: [question], report: compilationReport({ ran: false, reason: 'no_key', queries: [question] }) };
+  }
+
   const systemPrompt = `You are a semantic search query compiler for a research intelligence platform. Given a research question, generate 3-5 optimized search queries tailored for different search engines. Consider:
 - Exact phrases and key terms
 - Synonyms and alternate terminology
@@ -586,6 +710,9 @@ async function compileQueries(
 - Different angles: primary sources, secondary analysis, contrary views
 Return ONLY the queries, one per line. No numbering, no explanations.`;
 
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), COMPILER_TIMEOUT_MS);
   try {
     const resp = await fetch(`${FEATHERLESS_BASE}/chat/completions`, {
       method: "POST",
@@ -593,24 +720,63 @@ Return ONLY the queries, one per line. No numbering, no explanations.`;
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
+      signal: controller.signal,
       body: JSON.stringify({
-        model: "Qwen/Qwen2.5-7B-Instruct",
+        model: COMPILER_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `Research question: "${question}"\nPreset: ${preset}\nGenerate search queries:` },
         ],
-        max_tokens: 300,
+        max_tokens: COMPILER_MAX_TOKENS,
         temperature: 0.3,
       }),
     });
 
-    if (!resp.ok) return [question];
+    const duration_ms = Date.now() - started;
+    if (!resp.ok) {
+      return {
+        queries: [question],
+        report: compilationReport({
+          ran: true,
+          reason: 'error',
+          detail: `provider http ${resp.status}`,
+          duration_ms,
+          queries: [question],
+        }),
+      };
+    }
+
     const data = await resp.json();
     const text = data?.choices?.[0]?.message?.content ?? "";
-    const queries = text.split("\n").map((q: string) => q.trim()).filter((q: string) => q.length > 0);
-    return queries.length > 0 ? queries : [question];
-  } catch {
-    return [question];
+    const compiled = tidyQueries(text);
+    const queries = compiled.length > 0 ? compiled : [question];
+    const tokens = Number(data?.usage?.total_tokens);
+    return {
+      queries,
+      report: compilationReport({
+        ran: true,
+        reason: compiled.length > 0 ? 'ok' : 'empty',
+        duration_ms,
+        queries,
+        ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
+      }),
+    };
+  } catch (err) {
+    const timedOut = controller.signal.aborted;
+    return {
+      queries: [question],
+      report: compilationReport({
+        ran: true,
+        reason: timedOut ? 'timeout' : 'error',
+        detail: timedOut
+          ? `no answer within ${COMPILER_TIMEOUT_MS}ms`
+          : String((err as Error)?.message ?? err).slice(0, 120),
+        duration_ms: Date.now() - started,
+        queries: [question],
+      }),
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -685,7 +851,7 @@ const ENGINE_CAPABILITY_MAP: Record<string, string[]> = {
   general: ["duckduckgo", "wikipedia", "brave", "exa", "searxng", "google"],
   academic: ["arxiv", "openalex", "wikipedia", "exa"],
   technical: ["github", "grepapp", "duckduckgo", "wikipedia", "exa"],
-  historical: ["wikipedia", "duckduckgo", "arxiv"],
+  historical: ["wikipedia", "duckduckgo", "arxiv", "wayback"],
   verification: ["duckduckgo", "wikipedia", "brave", "google"],
   intel: ["shodan", "grepapp", "urlscan", "crtsh", "duckduckgo"],
   dark: ["ahmia", "duckduckgo"],
@@ -696,7 +862,7 @@ function selectEngines(preset: string, configuredEngines: string[]): string[] {
   const presetCapabilities: Record<string, string[]> = {
     general: ["duckduckgo", "wikipedia", "arxiv", "github"],
     deep: ["duckduckgo", "wikipedia", "arxiv", "github", "brave"],
-    historical: ["duckduckgo", "wikipedia", "arxiv"],
+    historical: ["duckduckgo", "wikipedia", "arxiv", "wayback"],
     academic: ["arxiv", "wikipedia", "openalex", "duckduckgo"],
     technical: ["github", "grepapp", "duckduckgo", "wikipedia"],
     "fact-check": ["duckduckgo", "wikipedia", "brave"],
@@ -721,28 +887,75 @@ function selectEngines(preset: string, configuredEngines: string[]): string[] {
 
 // ─── Main Handler ────────────────────────────────────────────────
 
+/** The service-role client, or null when this deployment has no counters to spend (local, tests). */
+type AdminClient = ReturnType<typeof createClient>;
+
+function adminClient(): AdminClient | null {
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY) return null;
+  return createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+}
+
 /**
- * A signed-in caller may have pasted their own provider keys. They are read once per request and
- * handed to the engines, so one person's Tavily quota is never spent by another's search.
- * Anything unreadable (bad token, missing table) simply means "fall back to the environment".
+ * Who is calling, and which provider keys they brought. One authentication, because the rate limit
+ * and the per-user keys are the same question: a verified session is an account, anything else is
+ * a public anon-key caller identified by address.
+ *
+ * Keys are read once per request and handed to the engines, so one person's Tavily quota is never
+ * spent by another's search. Anything unreadable (bad token, missing table) simply means "fall
+ * back to the environment".
  */
-async function loadUserKeys(req: Request): Promise<EngineKeys> {
+async function identifyCaller(client: AdminClient, req: Request): Promise<{ caller: Caller; keys: EngineKeys }> {
+  const anonymous: Caller = { kind: "anonymous", id: clientIp(req.headers) };
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-  if (!token || !SUPABASE_URL || !SERVICE_ROLE_KEY) return {};
+  if (!token) return { caller: anonymous, keys: {} };
+
   try {
-    const client = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
     const { data: auth, error } = await client.auth.getUser(token);
-    if (error || !auth?.user?.id) return {};
+    if (error || !auth?.user?.id) return { caller: anonymous, keys: {} };
     const { data, error: readError } = await client
       .from("user_engine_keys")
       .select("name, value")
       .eq("user_id", auth.user.id);
-    if (readError || !data) return {};
-    return Object.fromEntries(data.map((row) => [row.name as string, row.value as string]));
+    if (readError || !data) return { caller: { kind: "user", id: auth.user.id }, keys: {} };
+    return {
+      caller: { kind: "user", id: auth.user.id },
+      keys: Object.fromEntries(data.map((row) => [row.name as string, row.value as string])),
+    };
   } catch (err) {
-    console.error("user keys unavailable, using function secrets", (err as Error).message);
-    return {};
+    console.error("caller check failed, treating as anonymous", (err as Error).message);
+    return { caller: anonymous, keys: {} };
   }
+}
+
+/**
+ * A refusal that says which budget ran out and when to come back, so the composer can show the
+ * reason in the trail instead of a bare "Search failed (429)".
+ */
+function rateLimitedResponse(caller: Caller, verdict: Extract<Verdict, { ok: false }>): Response {
+  const retryAfter = retryAfterSeconds(verdict.resetAt);
+  console.warn(`search rate limited: ${caller.kind} ${verdict.scope} ${verdict.used}/${verdict.limit}`);
+  return new Response(
+    JSON.stringify({
+      error: RATE_LIMITED_MARKER,
+      message: rateLimitedMessage(caller, retryAfter),
+      tier: caller.kind,
+      scope: verdict.scope,
+      limit: verdict.limit,
+      used: verdict.used,
+      retry_after: retryAfter,
+    }),
+    {
+      status: 429,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+        "Retry-After": String(retryAfter),
+        "X-RateLimit-Limit": String(verdict.limit),
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Scope": verdict.scope,
+      },
+    }
+  );
 }
 
 /**
@@ -783,6 +996,19 @@ export async function handleRequest(req: Request): Promise<Response> {
   }
 
   try {
+    // Identify the caller before the body is even read: the counter and the per-user keys are one
+    // question, and a caller over budget must not cost a token of compilation or a single engine hit.
+    const admin = adminClient();
+    let caller: Caller = { kind: "anonymous", id: clientIp(req.headers) };
+    let userKeys: EngineKeys = {};
+    if (admin) {
+      const identified = await identifyCaller(admin, req);
+      caller = identified.caller;
+      userKeys = identified.keys;
+      const verdict = await checkLimits(admin, caller);
+      if (!verdict.ok) return rateLimitedResponse(caller, verdict);
+    }
+
     const body = await req.json();
     const {
       query,
@@ -803,24 +1029,22 @@ export async function handleRequest(req: Request): Promise<Response> {
       );
     }
 
-    // a signed-in caller's own provider keys win over the function's environment
-    const userKeys = await loadUserKeys(req);
-
-    // Fetch API key from database
+    // a signed-in caller's own provider keys were resolved with the caller, before the limit
     const FEATHERLESS_API_KEY = await getApiKey();
-    if (!FEATHERLESS_API_KEY && shouldCompile) {
-      // Skip query compilation if no API key, fall back to raw query
-    }
-
-    // Select engines based on preset portfolio optimization
     const engines = requestedEngines.length > 0 ? requestedEngines : selectEngines(preset, []);
 
-    // Compile queries — semantic query compilation
+    // Compile queries — one bounded model call, reported so the trail can name it and its cost.
+    // The report always carries the queries that were actually searched, including the dork
+    // expansions used when compilation is off, so it can never disagree with `queries_used`.
     let queries: string[] = [query];
-    if (shouldCompile && FEATHERLESS_API_KEY) {
-      queries = await compileQueries(query, preset, useDorks, FEATHERLESS_API_KEY);
-    } else if (useDorks) {
-      queries = expandQuery(query);
+    let compilation: CompilationReport;
+    if (shouldCompile) {
+      const plan = await compileQueries(query, preset, useDorks, FEATHERLESS_API_KEY);
+      queries = plan.queries;
+      compilation = plan.report;
+    } else {
+      queries = useDorks ? expandQuery(query) : [query];
+      compilation = compilationReport({ ran: false, reason: 'disabled', queries });
     }
 
     // Run searches across all engines and queries in parallel
@@ -915,6 +1139,7 @@ export async function handleRequest(req: Request): Promise<Response> {
       JSON.stringify({
         query,
         queries_used: queries,
+        compilation,
         engines_used: engines,
         total_results: results.length,
         preset,

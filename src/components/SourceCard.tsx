@@ -1,4 +1,4 @@
-import { Clock, ExternalLink, Sparkles } from 'lucide-react';
+import { Clock, ExternalLink, Eye, EyeOff, Sparkles } from 'lucide-react';
 import { queryIntent } from '../lib/fusion';
 import { intentBadge, recencyBadge } from '../lib/rankExplain';
 
@@ -13,6 +13,11 @@ export interface CardSource {
   published?: string;
   /** the query this source answered, kept per row so a reloaded list still explains itself */
   query?: string;
+  /**
+   * whether the prompt carried this source: true = the model could read it, false = panel only.
+   * Absent when no saved answer recorded a verdict — unknown, not "never shown".
+   */
+  in_prompt?: boolean;
 }
 
 /**
@@ -56,6 +61,25 @@ export function SourceCard({ source, rank }: { source: CardSource; rank?: number
             title={`Position ${rank} in this list, highest fusion score first`}
           >
             #{rank}
+          </span>
+        )}
+        {typeof source.in_prompt === 'boolean' && (
+          // the panel lists what the search returned; this says which of it the model ever read,
+          // so a panel-only result is not mistaken for evidence behind the answer
+          <span
+            title={
+              source.in_prompt
+                ? 'The saved answer carried this source to the model'
+                : 'Retrieved and listed here, but left out of the prompt — the model never saw it'
+            }
+            className={`flex items-center gap-0.5 rounded border px-1 py-0.5 font-mono ${
+              source.in_prompt
+                ? 'border-accent/30 bg-accent-subtle text-accent'
+                : 'border-warning/30 bg-warning-subtle text-warning'
+            }`}
+          >
+            {source.in_prompt ? <Eye size={8} /> : <EyeOff size={8} />}
+            {source.in_prompt ? 'in prompt' : 'panel only'}
           </span>
         )}
         {score !== undefined && score > 0 && (

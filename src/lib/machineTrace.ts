@@ -84,13 +84,36 @@ export function parseToolSearches(value: unknown): string[] {
 }
 
 /**
- * The sources the prompt actually carried: the ones marked, or every stored source on a row written
- * before the mark existed. A row that posted everything on its first search has all of them marked.
+ * The sources the prompt actually carried.
+ *
+ * The presence of any mark is what says the row records a verdict; the marks themselves then decide.
+ * Keying on the *presence* rather than on finding at least one `true` matters: a row whose sources
+ * are all marked false carried none of them to the model, and falling back to "all sources" there
+ * would credit the answer with evidence it never read. A row with no marks at all predates the
+ * record, so every source is the only honest reading.
  */
 export function usedSources(message: { search_results?: Source[] | null }): Source[] {
   const results = message.search_results ?? [];
-  const given = results.filter((source) => source.in_prompt === true);
-  return given.length > 0 ? given : results;
+  const marked = results.some((source) => typeof source.in_prompt === 'boolean');
+  return marked ? results.filter((source) => source.in_prompt === true) : results;
+}
+
+/**
+ * url → whether the prompt carried that source, from the rows that recorded a verdict.
+ *
+ * The Sources panel lists rows saved by the search, which runs before the prompt is built and so
+ * cannot know what the prompt carried. The verdict lives on the answer saved afterwards, which is
+ * why the panel reads it from the messages. The newest turn wins: the panel is showing the latest
+ * answer's evidence. A url no row marked is absent — unknown, not "never shown".
+ */
+export function promptCoverage(messages: { search_results?: Source[] | null }[]): Map<string, boolean> {
+  const coverage = new Map<string, boolean>();
+  for (const message of messages) {
+    for (const source of message.search_results ?? []) {
+      if (typeof source.in_prompt === 'boolean' && source.url) coverage.set(source.url, source.in_prompt);
+    }
+  }
+  return coverage;
 }
 
 /** Everything the transcript strip draws, from the stored message alone. */

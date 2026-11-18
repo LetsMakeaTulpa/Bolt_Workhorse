@@ -15,7 +15,7 @@ if (!process.env.BUBBLE_MODULE) {
   ]);
 }
 
-const { readInFull, parseToolSearches, summarizeMachine, usedSources } = await import(asUrl(LIB));
+const { readInFull, parseToolSearches, promptCoverage, summarizeMachine, usedSources } = await import(asUrl(LIB));
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -95,6 +95,13 @@ const source = (citation, title, extra = {}) => ({
   });
   check('the sources dated are the ones the prompt carried', carried.length === 1 && carried[0].citation_id === '[1]');
   check('an unmarked row falls back to all its sources', usedSources({ search_results: [source('[1]', 'A')] }).length === 1);
+  check(
+    'a row marked entirely panel-only carries nothing to the model',
+    usedSources({
+      search_results: [source('[1]', 'A', { in_prompt: false }), source('[2]', 'B', { in_prompt: false })],
+    }).length === 0,
+  );
+
 
   const unmarked = summarizeMachine({ search_results: [source('[1]', 'A')], tool_searches: [] });
   check('a row written before the mark claims nothing', unmarked.given === null && unmarked.panelOnly === 0 && unmarked.anything === false);
@@ -253,6 +260,34 @@ const source = (citation, title, extra = {}) => ({
     mostlyUndated.includes('Sources dated') && mostlyUndated.includes('2 undated'),
     mostlyUndated.slice(0, 240),
   );
+}
+
+// ── the Sources panel's marker: which stored rows the model was actually given ──
+{
+  const coverage = promptCoverage([
+    {
+      search_results: [
+        source('[1]', 'Read by the model', { in_prompt: true }),
+        source('[2]', 'Panel only', { in_prompt: false }),
+        source('[3]', 'Saved before the mark'),
+      ],
+    },
+  ]);
+  check(
+    'a marked row carries its verdict into the panel',
+    coverage.get('https://a.test/1') === true && coverage.get('https://a.test/2') === false,
+    JSON.stringify([...coverage]),
+  );
+  check('an unmarked legacy row stays unknown, not "never shown"', !coverage.has('https://a.test/3'));
+
+  const newest = promptCoverage([
+    { search_results: [source('[1]', 'shown once', { in_prompt: true })] },
+    { search_results: [source('[1]', 'not shown later', { in_prompt: false })] },
+  ]);
+  check('the newest turn that carried a url decides', newest.get('https://a.test/1') === false);
+
+  const untouched = promptCoverage([{ search_results: [source('[1]', 'unmarked')] }]);
+  check('a conversation with no marks yields nothing to claim', untouched.size === 0, String(untouched.size));
 }
 
 const failed = results.filter((row) => !row.ok);

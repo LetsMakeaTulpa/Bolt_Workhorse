@@ -10,6 +10,11 @@ import { useState } from 'react';
 
 interface InvestigationPanelProps {
   searchResults: Source[];
+  /**
+   * url → whether the prompt carried it, recorded on the saved answers. The panel's own rows are
+   * written before the prompt exists, so without this every result looks equally model-visible.
+   */
+  promptCoverage?: Map<string, boolean>;
   isSearching: boolean;
   findings: Finding[];
   onUpdateFindingStatus: (id: string, status: 'saved' | 'shared' | 'discarded') => void;
@@ -29,6 +34,7 @@ export type PanelTab = 'map' | 'activity' | 'sources' | 'evidence';
 
 export function InvestigationPanel({
   searchResults,
+  promptCoverage,
   isSearching,
   findings,
   onUpdateFindingStatus,
@@ -75,6 +81,7 @@ export function InvestigationPanel({
             isSearching={isSearching}
             query={query}
             gaps={gaps}
+            promptCoverage={promptCoverage}
             onRetrySearch={onRetrySearch}
           />
         )}
@@ -154,12 +161,15 @@ function SourcesTab({
   isSearching,
   query,
   gaps,
+  promptCoverage,
   onRetrySearch,
 }: {
   results: Source[];
   sources: SourceRecord[];
   isSearching: boolean;
   query?: string;
+  /** url → whether the prompt carried it; absent when no saved answer recorded a verdict */
+  promptCoverage?: Map<string, boolean>;
   /** the gap lines the empty run recorded, so an empty page still explains itself */
   gaps?: string[];
   onRetrySearch?: (query: string) => void;
@@ -183,8 +193,16 @@ function SourcesTab({
         relevance_score: s.relevance_score,
         published: s.publication_date || undefined,
         query: s.original_query || query,
+        // a stored row cannot carry this itself: it is saved before the prompt is built
+        in_prompt: promptCoverage?.get(s.url),
       }))
-    : results.map((r) => ({ ...r, citation_id: r.citation_id ?? '', relevance_score: r.relevance_score ?? 0, query }));
+    : results.map((r) => ({
+        ...r,
+        citation_id: r.citation_id ?? '',
+        relevance_score: r.relevance_score ?? 0,
+        query,
+        in_prompt: r.in_prompt ?? promptCoverage?.get(r.url),
+      }));
 
   if (displaySources.length === 0) {
     // never a blank panel: after a run that found nothing it names the gaps and offers the next move

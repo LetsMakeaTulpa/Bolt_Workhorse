@@ -155,6 +155,23 @@ const badges = (html) => (html.match(/<span[^>]*class="[^"]*rounded border[^"]*"
   check('an unranked card shows no position', !/>#\d+</.test(render(card({ published: ago(3) }))));
 }
 
+// 10. whether the prompt carried the source: the one line in the panel between evidence and results
+{
+  const shown = render(card({ in_prompt: true }));
+  check('a source the prompt carried says so', /<\/svg>in prompt</.test(shown), shown.match(/<\/svg>[^<]*/)?.[0]);
+  check('the model-visible mark is the accent one', /border-accent\/30 bg-accent-subtle text-accent/.test(shown));
+  check('its tooltip says the model could read it', /carried this source to the model/.test(shown));
+
+  const hidden = render(card({ in_prompt: false }));
+  check('a panel-only source says the model never saw it', /<\/svg>panel only</.test(hidden), hidden.match(/<\/svg>[^<]*/)?.[0]);
+  check('the panel-only mark is the warning tone', /border-warning\/30 bg-warning-subtle text-warning/.test(hidden));
+  check('its tooltip names the consequence', /never saw it/.test(hidden));
+
+  const unknown = render(card({}));
+  check('a row with no recorded verdict carries no mark', !/>in prompt</.test(unknown) && !/>panel only</.test(unknown));
+  check('and the unmarked card keeps its badges unchanged', badges(unknown).length === 2, String(badges(unknown).length));
+}
+
 const failed = results.filter((row) => !row.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);
 if (failed.length) process.exit(1);

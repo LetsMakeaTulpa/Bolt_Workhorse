@@ -18,6 +18,7 @@ import type { ModelNotice } from './components/ModelNotice';
 import { readEmptyResultBlock, writeEmptyResultBlock } from './lib/emptyResultPref';
 import { formatSourceContext } from './lib/sourceContext';
 import { readPanelCollapsed, writePanelCollapsed } from './lib/panelPref';
+import { promptCoverage } from './lib/machineTrace';
 import { ModelSelector } from './components/ModelSelector';
 import { SettingsModal } from './components/SettingsModal';
 import { PresetSelector } from './components/PresetSelector';
@@ -847,6 +848,9 @@ export default function App() {
           {showSearchPanel ? (
             <InvestigationPanel
               searchResults={searchResults}
+              // which panel rows the model actually read, taken from the saved answers: the panel's
+              // own source rows predate the prompt and cannot know
+              promptCoverage={promptCoverage(messages)}
               isSearching={isSearching}
               findings={findings}
               onUpdateFindingStatus={handleUpdateFindingStatus}

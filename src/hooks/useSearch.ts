@@ -11,7 +11,8 @@ import {
   summarizeEngineStatus,
   type EngineIssue,
 } from '../lib/engines';
-import { expandLane } from '../lib/dorks';
+import { DORK_LANES, expandLane } from '../lib/dorks';
+import { compilationStatus, describeCompilation } from '../lib/compileReport';
 import type { ActivityLog, ResearchPreset, Source } from '../types';
 
 /**
@@ -80,6 +81,10 @@ export function useSearch({
   const [laneYield, setLaneYield] = useState<LaneYield[]>([]);
   /** the relevance gate kept nothing, so the closest results were shown anyway */
   const [relaxedGate, setRelaxedGate] = useState(false);
+  /** the queries the function actually ran, in order: a rewritten question is shown, not hidden */
+  const [queriesUsed, setQueriesUsed] = useState<string[]>([]);
+  /** the last run forced the freshness multiplier on, whatever the query's intent said */
+  const [forcedRecency, setForcedRecency] = useState(false);
   /** the query behind the current result set, so the panel can explain the ranking */
   const [lastQuery, setLastQuery] = useState('');
   /** the in-flight search, plus the gate deciding which run is still allowed to write */
@@ -97,6 +102,7 @@ export function useSearch({
   useEffect(() => {
     const wasRunning = guard.supersede();
     setIssues([]);
+    setQueriesUsed([]);
     setIsSearching(false);
     setStatus('');
     // partial results belong to the aborted run, not to the engine set the user just picked; a
@@ -105,6 +111,7 @@ export function useSearch({
       setResults([]);
       setLaneYield([]);
       setLastQuery('');
+      setForcedRecency(false);
     }
   }, [engineSignature, guard]);
 
@@ -114,10 +121,23 @@ export function useSearch({
     setIssues([]);
     setLaneYield([]);
     setRelaxedGate(false);
+    setForcedRecency(false);
+    setQueriesUsed([]);
   }, []);
 
   const performSearch = useCallback(
-    async (query: string, convId: string, options: { keepStreaming?: boolean } = {}): Promise<Source[]> => {
+    async (
+      query: string,
+      convId: string,
+      options: {
+        keepStreaming?: boolean;
+        compileQueries?: boolean;
+        /** run this search on a scope of its own, without changing the composer's selection */
+        engines?: string[];
+        /** the reader overruled the query's intent: weight publication dates anyway */
+        forceFresh?: boolean;
+      } = {},
+    ): Promise<Source[]> => {
       // a new search owns the result list: supersede the previous run so a slow engine cannot
       // overwrite fresher results when it finally answers
       cancelledRef.current = false;
@@ -131,9 +151,13 @@ export function useSearch({
 
       setIsSearching(true);
       setLastQuery(query);
+      setForcedRecency(options.forceFresh === true);
+      setQueriesUsed([]);
       setIssues([]);
       const preset = presets.find((p) => p.name === selectedPreset);
-      const enginesToUse = engines.length > 0 ? engines : (preset?.config.engines ?? ['duckduckgo', 'wikipedia', 'arxiv', 'github']);
+      const enginesToUse =
+        options.engines ??
+        (engines.length > 0 ? engines : (preset?.config.engines ?? ['duckduckgo', 'wikipedia', 'arxiv', 'github']));
       const maxResults = preset?.config.max_results ?? 5;
 
       await logActivity(convId, 'plan', `Compiling search strategy for: "${query}"`, { preset: selectedPreset, engines: enginesToUse });
@@ -154,7 +178,7 @@ export function useSearch({
         setLaneYield([]);
         const [serverResponse, browserResults] = await Promise.all([
           serverEngines.length > 0
-            ? webSearch(query, serverEngines, maxResults, useDorks, selectedPreset, true, controller.signal).then((response) => {
+            ? webSearch(query, serverEngines, maxResults, useDorks, selectedPreset, options.compileQueries ?? true, controller.signal).then((response) => {
                 if (!isCurrent()) return response;
                 if (response?.results?.length) {
                   setResults((previous) => [...previous, ...response.results]);
@@ -176,6 +200,10 @@ export function useSearch({
 
         // a superseded run must not touch the list, the map or the database
         if (!isCurrent()) return [];
+
+        // what the function actually searched for. The compiler may have rewritten the question,
+        // and a reader looking at odd results deserves to see the words that were really sent.
+        setQueriesUsed(serverResponse?.queries_used?.length ? serverResponse.queries_used : [query]);
 
         let gathered = [...(serverResponse?.results ?? []), ...browserResults];
         let spareEngines: string[] = [];
@@ -228,13 +256,24 @@ export function useSearch({
           const engine = item.source_engine || 'unknown';
           (perEngine[engine] ??= []).push(item);
         }
-        const { results: fused, laneYield: yields, relaxed } = fuseResultsDetailed(query, perEngine, { limit: 40 });
+        const { results: fused, laneYield: yields, relaxed } = fuseResultsDetailed(query, perEngine, {
+          limit: 40,
+          forceFresh: options.forceFresh,
+        });
         if (!isCurrent()) return [];
 
         const yieldReport = summarizeLaneYield(yields);
         setResults(fused);
         setLaneYield(yieldReport);
         setRelaxedGate(relaxed);
+        if (options.forceFresh) {
+          await logActivity(
+            convId,
+            'rank',
+            'Recency forced for this run — publication dates moved results even though the question is not recency-seeking',
+            { force_fresh: true, engines: enginesToUse },
+          );
+        }
 
         await logActivity(convId, 'rank', `Reciprocal Rank Fusion applied to ${fused.length} results`, {
           engines_used: [...(serverResponse?.engines_used ?? []), ...browserEngines, ...spareEngines],
@@ -261,6 +300,19 @@ export function useSearch({
               : `No page text could be read for the top ${extraction.requested} sources`,
             { extraction },
             'completed',
+          );
+        }
+
+        // the compiler is a model call on the deployment's account, made before any engine ran:
+        // the trail names the model and what it cost, so a rewritten question is never silent
+        const compilation = serverResponse?.compilation;
+        if (compilation) {
+          await logActivity(
+            convId,
+            'compile',
+            describeCompilation(compilation),
+            { compilation },
+            compilationStatus(compilation),
           );
         }
 
@@ -317,12 +369,10 @@ export function useSearch({
    * kept as separate ranking lists (`engine·q3`) so a page matched by several dork patterns
    * outranks one that a single pattern happened to surface.
    */
-  const runLane = useCallback(
-    async (lane: string, target: string) => {
+  const runBatch = useCallback(
+    async (label: string, queries: string[], target: string) => {
       const cleanTarget = target.trim();
-      if (!cleanTarget || isSearching || isStreaming) return;
-      const queries = expandLane(lane, cleanTarget, 10);
-      if (queries.length === 0) return;
+      if (!cleanTarget || queries.length === 0 || isSearching || isStreaming) return;
 
       // a lane run is a search too: superseding the previous run keeps a slow lane from landing on
       // top of whatever the user asked for next
@@ -330,7 +380,7 @@ export function useSearch({
       const controller = run.controller;
       const isLaneCurrent = run.isCurrent;
 
-      const conversationId = await ensureConversation(`${lane}: ${cleanTarget}`);
+      const conversationId = await ensureConversation(`${label}: ${cleanTarget}`);
 
       const preset = presets.find((p) => p.name === selectedPreset);
       const enginesToUse = engines.length > 0 ? engines : (preset?.config.engines ?? ['duckduckgo', 'wikipedia', 'arxiv', 'github']);
@@ -347,12 +397,12 @@ export function useSearch({
       setIssues([]);
       setLaneYield([]);
       setRelaxedGate(false);
-      setStatus(`Lane "${lane}" — starting ${queries.length} queries`);
+      setStatus(`${label} — starting ${queries.length} queries`);
       await logActivity(
         conversationId,
         'plan',
-        `Batch lane "${lane}": ${queries.length} dork queries against ${cleanTarget}`,
-        { lane, queries, engines: laneEngines },
+        `Dork batch "${label}": ${queries.length} queries against ${cleanTarget}`,
+        { label, queries, engines: laneEngines },
         'running',
       );
       if (dorkCapable.length === 0) {
@@ -401,7 +451,7 @@ export function useSearch({
           await logActivity(conversationId, 'search', `Dork query failed: ${query}`, {}, 'failed');
         } finally {
           finished += 1;
-          setStatus(`Lane "${lane}" — ${finished}/${queries.length} queries`);
+          setStatus(`${label} — ${finished}/${queries.length} queries`);
         }
       };
 
@@ -424,9 +474,9 @@ export function useSearch({
         setResults(fused);
         setLaneYield(laneReport);
         setRelaxedGate(relaxed);
-        await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { lane, queries }, 'completed');
+        await logActivity(conversationId, 'rank', `${queries.length} dork queries fused into ${fused.length} unique sources`, { label, queries }, 'completed');
         await logActivity(conversationId, 'rank', describeLaneYield(laneReport, relaxed), {
-          lane,
+          label,
           lane_yield: laneYieldDetail(laneReport),
           dead_lanes: deadLanes(laneReport),
           gate_relaxed: relaxed,
@@ -435,13 +485,13 @@ export function useSearch({
           await logActivity(
             conversationId,
             'search',
-            `Lane "${lane}" returned no sources. The engines that honour dorks may be rate-limited or unconfigured (Exa, SearXNG, Google and Tavily need secrets on the search function).`,
-            { lane, engines: laneEngines },
+            `Dork batch "${label}" returned no sources. The engines that honour dorks may be rate-limited or unconfigured (Exa, SearXNG, Google and Tavily need secrets on the search function).`,
+            { label, engines: laneEngines },
             'failed',
           );
         }
 
-        if (fused.length > 0) await saveSources(conversationId, fused, `${lane}: ${cleanTarget}`);
+        if (fused.length > 0) await saveSources(conversationId, fused, `${label}: ${cleanTarget}`);
       } finally {
         if (isLaneCurrent()) {
           setIsSearching(false);
@@ -452,6 +502,16 @@ export function useSearch({
     [engines, presets, selectedPreset, isSearching, isStreaming, logActivity, ensureConversation, saveSources, guard],
   );
 
+  /** One lane: its templates expanded against the target, ranked once by the shared batch runner. */
+  const runLane = useCallback(
+    async (lane: string, target: string) => {
+      const cleanTarget = target.trim();
+      const queries = cleanTarget ? expandLane(lane, cleanTarget, 10) : [];
+      await runBatch(lane, queries, cleanTarget);
+    },
+    [runBatch],
+  );
+
   return {
     /** the fused list the panel renders */
     results,
@@ -460,6 +520,10 @@ export function useSearch({
     issues,
     laneYield,
     relaxedGate,
+    /** the last run forced the freshness multiplier on, so the panel can say so */
+    forcedRecency,
+    /** the queries the function actually ran, for the panel to show and re-run */
+    queriesUsed,
     lastQuery,
     performSearch,
     cancelSearch,

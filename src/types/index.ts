@@ -168,9 +168,28 @@ export interface EngineStatus {
   detail?: string;
 }
 
+/**
+ * What the function's query compiler did on this search. The compiler is a model call made on the
+ * deployment's account before any engine runs, so it travels with the response instead of
+ * disappearing into the function: which model, whether it ran, and what it cost.
+ */
+export interface CompilationReport {
+  model: string;
+  /** false when the compiler never reached the provider (disabled, or no key configured) */
+  ran: boolean;
+  reason: 'ok' | 'disabled' | 'no_key' | 'timeout' | 'error' | 'empty';
+  queries: string[];
+  duration_ms: number;
+  /** provider-reported tokens for this call, when it reported any */
+  tokens?: number;
+  detail?: string;
+}
+
 export interface SearchResponse {
   query: string;
   queries_used: string[];
+  /** absent on functions deployed before the compiler reported itself */
+  compilation?: CompilationReport | null;
   total_results: number;
   engines_used: string[];
   preset: string;

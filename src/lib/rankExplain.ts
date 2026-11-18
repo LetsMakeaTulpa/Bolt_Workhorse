@@ -33,9 +33,19 @@ export function describeIntent(intent: QueryIntent): IntentSummary {
   return { label: 'mixed', detail: 'No strong signal, so engines are trusted roughly equally.' };
 }
 
-/** The score multiplier fusion applied to one result, 1 when the date played no part. */
-export function freshnessBonus(published: string | undefined, intent: QueryIntent, now = Date.now()): number {
-  return 1 + 0.6 * recencyWeight(published, intent.fresh, now);
+/**
+ * The score multiplier fusion applied to one result, 1 when the date played no part.
+ *
+ * `forced` is a run that overruled the query's intent — the freshness receipt's control — so the
+ * badge reflects the multiplier that run actually applied rather than the one the words earned.
+ */
+export function freshnessBonus(
+  published: string | undefined,
+  intent: QueryIntent,
+  now = Date.now(),
+  forced = false,
+): number {
+  return 1 + 0.6 * recencyWeight(published, forced ? 1 : intent.fresh, now);
 }
 
 export function summaryForQuery(query: string, now = Date.now()): IntentSummary {
@@ -82,8 +92,13 @@ export interface RecencyBadge {
  * date on a timeless or identifier query is not a small boost, it is no boost, and saying so is the
  * point of the badge.
  */
-export function recencyBadge(published: string | undefined, intent: QueryIntent, now = Date.now()): RecencyBadge {
-  const multiplier = freshnessBonus(published, intent, now);
+export function recencyBadge(
+  published: string | undefined,
+  intent: QueryIntent,
+  now = Date.now(),
+  forced = false,
+): RecencyBadge {
+  const multiplier = freshnessBonus(published, intent, now, forced);
   const at = published ? Date.parse(published) : NaN;
   if (!published || !Number.isFinite(at)) {
     return {
@@ -98,7 +113,8 @@ export function recencyBadge(published: string | undefined, intent: QueryIntent,
   const ageDays = Math.max(0, (now - at) / DAY);
   const age = ageDays < 1 ? 'today' : ageDays < 60 ? `${Math.round(ageDays)}d ago` : `${Math.round(ageDays / 30)}mo ago`;
 
-  if (intent.fresh <= 0) {
+  const tier: RecencyTier = ageDays <= 30 ? 'fresh' : ageDays <= 180 ? 'recent' : ageDays <= 730 ? 'aging' : 'old';
+  if (intent.fresh <= 0 && !forced) {
     return {
       tier: 'ignored',
       multiplier: 1,
@@ -107,12 +123,16 @@ export function recencyBadge(published: string | undefined, intent: QueryIntent,
     };
   }
 
-  const tier: RecencyTier = ageDays <= 30 ? 'fresh' : ageDays <= 180 ? 'recent' : ageDays <= 730 ? 'aging' : 'old';
+  // a forced run is the reader overruling the query's intent, so the badge must not claim the date
+  // was ignored: it moved this result by exactly the multiplier shown
   return {
     tier,
     multiplier,
     published,
-    detail: `Published ${date} (${age}) — freshness ×${multiplier.toFixed(2)} for a ${intent.fresh >= 1 ? 'recency-seeking' : 'partly recency-seeking'} query.`,
+    detail:
+      forced && intent.fresh <= 0
+        ? `Published ${date} (${age}) — freshness ×${multiplier.toFixed(2)}, because recency was forced for this run.`
+        : `Published ${date} (${age}) — freshness ×${multiplier.toFixed(2)} for a ${intent.fresh >= 1 ? 'recency-seeking' : 'partly recency-seeking'} query.`,
   };
 }
 

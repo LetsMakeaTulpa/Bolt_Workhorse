@@ -331,6 +331,37 @@ check(
   })(),
 );
 
+// ── forced recency: the freshness receipt's control ──────────────────────────
+// A timeless question gets no recency weighting by default; the control asks for it anyway, so the
+// reader's judgement beats the intent classifier without touching how the engines were weighted.
+const romanLists = {
+  exa: [
+    {
+      title: 'Roman republic constitution',
+      url: 'https://rome.example/old',
+      snippet: 'roman republic constitution',
+      source_engine: 'exa',
+      published: '2010-01-01',
+    },
+    {
+      title: 'Roman republic senate',
+      url: 'https://rome.example/new',
+      snippet: 'roman republic senate',
+      source_engine: 'exa',
+      published: '2026-09-01',
+    },
+  ],
+};
+const plainOrder = fuseResults('history of the roman republic', romanLists, { now: NOW });
+const forcedOrder = fuseResults('history of the roman republic', romanLists, { now: NOW, forceFresh: true });
+check('a timeless query ignores dates by default', plainOrder[0].url.endsWith('/old'), plainOrder[0].url);
+check('forcing recency lifts the newer page', forcedOrder[0].url.endsWith('/new'), forcedOrder[0].url);
+check(
+  'forcing recency keeps every source and its engine',
+  forcedOrder.length === plainOrder.length && forcedOrder.every((item) => item.source_engine),
+  `${forcedOrder.length} vs ${plainOrder.length}`,
+);
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);
 if (failed.length) process.exit(1);

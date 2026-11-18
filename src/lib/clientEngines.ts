@@ -220,6 +220,44 @@ const internetArchiveEngine: ClientEngine = {
   },
 };
 
+const gdeltEngine: ClientEngine = {
+  id: 'gdelt',
+  label: 'GDELT',
+  note: 'Worldwide news, last three months, many languages',
+  async search(query, limit, signal) {
+    // the doc API answers from the last three months only; a query with no term is a 400
+    const params = new URLSearchParams({
+      query,
+      mode: 'artlist',
+      maxrecords: String(Math.max(3, limit) * 2),
+      format: 'json',
+      sort: 'hybridrel',
+    });
+    const data = (await fetchJson(`https://api.gdeltproject.org/api/v2/doc/doc?${params.toString()}`, signal)) as {
+      articles?: Record<string, unknown>[];
+    } | null;
+    return (data?.articles ?? [])
+      .map((item) => {
+        // seendate arrives as 20261117120000, which fusion reads as YYYY-MM-DD
+        const stamp = text(item.seendate);
+        const published = /^\d{8}/.test(stamp)
+          ? `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}`
+          : /^\d{4}-\d{2}-\d{2}/.test(stamp)
+            ? stamp.slice(0, 10)
+            : undefined;
+        return {
+          title: text(item.title) || text(item.url),
+          url: text(item.url),
+          snippet: [text(item.domain), text(item.sourcecountry), text(item.language)].filter(Boolean).join(' · '),
+          source_engine: 'gdelt',
+          ...(published ? { published } : {}),
+        } satisfies Source;
+      })
+      .filter((item) => item.url)
+      .slice(0, limit);
+  },
+};
+
 const lemmyEngine: ClientEngine = {
   id: 'lemmy',
   label: 'Lemmy',
@@ -307,6 +345,7 @@ export const CLIENT_ENGINES: ClientEngine[] = [
   openLibraryEngine,
   europePmcEngine,
   internetArchiveEngine,
+  gdeltEngine,
   lemmyEngine,
   wikidataEngine,
   crtShEngine,

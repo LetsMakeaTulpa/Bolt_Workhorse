@@ -9,7 +9,7 @@
 import type { EngineStatus } from '../types';
 
 export type EngineRuntime = 'server' | 'browser';
-export type EngineGroup = 'Web' | 'Academic' | 'Community' | 'Deep web' | 'Dark web' | 'OSINT';
+export type EngineGroup = 'Web' | 'Academic' | 'Community' | 'News' | 'Deep web' | 'Dark web' | 'OSINT';
 
 export interface EngineDef {
   id: string;
@@ -65,6 +65,15 @@ export const ENGINE_CATALOG: EngineDef[] = [
   { id: 'openlibrary', label: 'Open Library', group: 'Community', runtime: 'browser', note: 'Books, editions and authors' },
 
   { id: 'archiveorg', label: 'Internet Archive', group: 'Deep web', runtime: 'browser', note: 'Archived texts, media and vanished pages' },
+  {
+    id: 'wayback',
+    label: 'Wayback Machine',
+    group: 'Deep web',
+    runtime: 'server',
+    needsSetup: true,
+    note: 'How a page looked over time — activated by the updated search function',
+  },
+  { id: 'gdelt', label: 'GDELT', group: 'News', runtime: 'browser', note: 'Worldwide news coverage from the last three months' },
 
   {
     id: 'ahmia',
@@ -98,13 +107,13 @@ export const SURFACES: SurfaceDef[] = [
     id: 'surface',
     label: 'Surface web',
     hint: 'Indexed clearnet: general engines and communities',
-    engines: ['duckduckgo', 'brave', 'google', 'exa', 'searxng', 'tavily', 'firecrawl', 'wikipedia', 'hn', 'stackexchange', 'lemmy', 'wikidata'],
+    engines: ['duckduckgo', 'brave', 'google', 'exa', 'searxng', 'tavily', 'firecrawl', 'wikipedia', 'hn', 'stackexchange', 'lemmy', 'wikidata', 'gdelt'],
   },
   {
     id: 'deep',
     label: 'Deep web',
     hint: 'Records, papers and archives that normal indexes miss',
-    engines: ['archiveorg', 'openlibrary', 'europepmc', 'openalex', 'crossref', 'arxiv'],
+    engines: ['archiveorg', 'wayback', 'openlibrary', 'europepmc', 'openalex', 'crossref', 'arxiv'],
   },
   {
     id: 'dark',
@@ -131,7 +140,7 @@ export const SURFACES: SurfaceDef[] = [
  * Engines that answer with no provider key. A search whose chosen engines return nothing retries
  * on these, so a missing key degrades the ranking instead of blanking the results page.
  */
-export const KEYLESS_ENGINES = ['duckduckgo', 'wikipedia', 'arxiv', 'github', 'hn', 'crossref', 'europepmc'];
+export const KEYLESS_ENGINES = ['duckduckgo', 'wikipedia', 'arxiv', 'github', 'hn', 'crossref', 'europepmc', 'gdelt'];
 
 /** The keyless engines not already in `selected`, in preference order. */
 export function fallbackEnginesFor(selected: string[]): string[] {

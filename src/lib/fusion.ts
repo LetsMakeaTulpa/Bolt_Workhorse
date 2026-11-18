@@ -169,6 +169,29 @@ const SCHOLAR = 'paper study dataset benchmark thesis journal survey citation do
 const INTEL = 'cve vulnerability exploit breach leak shodan osint dork subdomain malware ransomware exposed scan'.split(' ');
 const ENCYCLOPEDIC = 'what who when where history define definition meaning'.split(' ');
 
+/**
+ * Whether the question is about a page as it stood, rather than about where it lives now.
+ *
+ * `navigational` is not the archive signal, even though an archived page is navigational: a bare
+ * domain, a quoted phrase, `filetype:pdf` and every CVE id register that way, and for
+ * `CVE-2024-3094` the live advisory is the answer — an archived copy of it is not. What does mean
+ * the archive is historical wording, or a page named together with the time being asked about
+ * ("example.com in 2021", "site:x.com before:2020"). An identifier's own year is not a time cue:
+ * `CVE-2024-3094` dates the advisory, it does not ask what the page looked like then.
+ */
+export function archiveIntent(query: string, intent: QueryIntent = queryIntent(query)): boolean {
+  if (intent.evergreen >= 0.5) return true;
+  const text = String(query ?? '')
+    .toLowerCase()
+    // an identifier carries a year without dating the question
+    .replace(/\b(?:cve-\d{4}-\d+|ipv[46]|\d{1,3}(?:\.\d{1,3}){3})\b/g, ' ');
+  const phrasing = /\b(?:as of|at the time|back then|previously|used to|no longer|snapshot|archived?|looked like)\b/;
+  // a year the question is about, not one that happens to appear: "in 2021", "from 2019", "before:2020"
+  const dated = phrasing.test(text) || /\b(?:in|from|during|circa|before|after)\b[^.]{0,12}\b(?:19|20)\d{2}\b/.test(text);
+  const locator = /https?:\/\/|\b(?:site|inurl):|\b[a-z0-9-]+\.[a-z]{2,6}\b/.test(text);
+  return dated && locator;
+}
+
 /** Per-engine trust, routed by query intent. */
 export function engineWeights(
   query: string,
@@ -198,6 +221,10 @@ export function engineWeights(
     europepmc: 0.9,
     openlibrary: 0.55,
     archiveorg: 0.7,
+    // an archived copy is evidence of what a page said, not of what is true now
+    wayback: 0.75,
+    // news wires: broad, fast, and the only lane covering most of the world
+    gdelt: 1.0,
     lemmy: 0.55,
     wikidata: 0.55,
     crtsh: 0.5,
@@ -223,6 +250,11 @@ export function engineWeights(
     weights.openalex = 1.25;
     weights.crossref = 1.15;
   }
+  // "what did this page look like in 2021" is an archive question, and the archive should outrank
+  // the live page that replaced it. A CVE id or a bare domain is navigational without being an
+  // archive question, so it keeps the base weight instead of burying the live advisory.
+  if (archiveIntent(query, intent)) weights.wayback = 1.35;
+
   if (has(INTEL)) {
     weights.duckduckgo = 1.4;
     weights.github = 1.25;
@@ -284,6 +316,14 @@ export interface FusionOptions {
   weights?: Record<string, number>;
   /** set false to disable the freshness multiplier */
   recency?: boolean;
+  /**
+   * Apply the freshness multiplier whatever the query's intent says.
+   *
+   * The receipt under a stale answer offers this: the reader has decided they want recent pages,
+   * which is a better signal than the words of the question. It lifts dates only — engine weights
+   * and the relevance gate stay exactly as the query earned them.
+   */
+  forceFresh?: boolean;
   /** how much a fully fresh result can add to its score (1.2 by default) */
   recencyGain?: number;
   /** exponent on term coverage, so relevance outranks rank (1.5 by default) */
@@ -522,7 +562,8 @@ export function fuseResultsDetailed(
   for (const item of all) {
     item.rel = termCoverage(relevanceQuery, item, df, all.length);
     // a freshness-seeking query lifts dated recent results; a timeless one ignores dates
-    item.recency = useRecency ? recencyWeight(item.published, intent.fresh, now) : 0;
+    // a forced run lifts dated results without touching how the query was read for engine weights
+    item.recency = useRecency ? recencyWeight(item.published, options.forceFresh ? 1 : intent.fresh, now) : 0;
     // Freshness multiplies rather than adds, so it scales with how well the result already
     // matches: a stale page that mentions every term still outranks an unrelated fresh one.
     item.score =

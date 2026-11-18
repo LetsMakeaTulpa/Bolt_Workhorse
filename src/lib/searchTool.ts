@@ -44,10 +44,12 @@ export interface SearchToolLoopOptions {
   stream: (messages: ToolMessage[], tools: ChatTool[]) => Promise<TurnOutput>;
   /** runs the real search for one query */
   runSearch: (query: string) => Promise<SearchOutcome>;
+  /** runs one dork query; absent means `search_dorks` is not offered on this turn */
+  runDorks?: (query: string) => Promise<SearchOutcome>;
   /** extra searches allowed beyond the first pass */
   maxSearches?: number;
   /** called as each tool search starts, so the UI can log it */
-  onSearch?: (query: string, index: number) => void;
+  onSearch?: (query: string, index: number, tool: 'search_web' | 'search_dorks') => void;
 }
 
 export interface SearchToolRun {
@@ -57,6 +59,18 @@ export interface SearchToolRun {
   error?: string;
   /** every turn as the provider saw it, which is how the call/tool pairing is asserted */
   transcript: ToolMessage[];
+}
+
+/**
+ * Whether a query carries an operator, which is the only thing that makes a dork a dork.
+ *
+ * The operator list is the one `dorks.ts` teaches: a model that sends "example.com config" to
+ * `search_dorks` has asked for a plain search, and spending a budget slot on it while pretending
+ * otherwise would hide the mistake instead of correcting it.
+ */
+export function hasDorkOperator(query: string): boolean {
+  const text = String(query ?? '');
+  return /\b(?:site|inurl|intitle|allintitle|intext|filetype|ext|related|link|cache|before|after):/i.test(text) || /"[^"]+"/.test(text);
 }
 
 /** The query a call asked for, or '' when the arguments are not a usable query. */
@@ -86,6 +100,7 @@ export async function runSearchToolLoop({
   tools,
   stream,
   runSearch,
+  runDorks,
   maxSearches = 2,
   onSearch,
 }: SearchToolLoopOptions): Promise<SearchToolRun> {
@@ -120,38 +135,38 @@ export async function runSearchToolLoop({
     for (const call of calls) {
       const callId = call.id;
       const name = call.function.name;
-      if (name !== 'search_web') {
-        transcript.push({
-          role: 'tool',
-          tool_call_id: callId,
-          name,
-          content: `No tool named ${name}. The only tool is search_web.`,
-        });
+      const isDork = name === 'search_dorks';
+      const reply = (content: string) =>
+        transcript.push({ role: 'tool', tool_call_id: callId, name, content });
+
+      if (!isDork && name !== 'search_web') {
+        reply(`No tool named ${name}. The tools are search_web and search_dorks.`);
         continue;
       }
+      if (isDork && !runDorks) {
+        reply('search_dorks is not available on this turn.');
+        continue;
+      }
+      // a dork costs the same budget as a search: it is a real run against real engines
       if (searches.length >= maxSearches) {
-        transcript.push({
-          role: 'tool',
-          tool_call_id: callId,
-          name: 'search_web',
-          content: `Search budget spent (${maxSearches} extra searches). Answer with the sources you already have.`,
-        });
+        reply(`Search budget spent (${maxSearches} extra searches). Answer with the sources you already have.`);
         continue;
       }
       const query = queryFromToolCall(call.function.arguments);
       if (!query) {
-        transcript.push({
-          role: 'tool',
-          tool_call_id: callId,
-          name: 'search_web',
-          content: 'search_web needs a "query" string. Call it again with {"query": "..."}.',
-        });
+        reply(`${name} needs a "query" string. Call it again with {"query": "..."}.`);
+        continue;
+      }
+      if (isDork && !hasDorkOperator(query)) {
+        reply(
+          'search_dorks needs at least one operator (site:, inurl:, intitle:, intext:, filetype:, ext:, before:, after:). For a plain query use search_web.',
+        );
         continue;
       }
       searches.push(query);
-      onSearch?.(query, searches.length);
-      const outcome = await runSearch(query);
-      transcript.push({ role: 'tool', tool_call_id: callId, name: 'search_web', content: outcome.text });
+      onSearch?.(query, searches.length, isDork ? 'search_dorks' : 'search_web');
+      const outcome = isDork ? await runDorks!(query) : await runSearch(query);
+      reply(outcome.text);
     }
   }
 

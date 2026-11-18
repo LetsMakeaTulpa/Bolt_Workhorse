@@ -22,7 +22,7 @@ if (!process.env.API_MODULE) {
 }
 if (!process.env.SEARCH_TOOL_MODULE) bundle('src/lib/searchTool.ts', LOOP_PATH);
 
-const { streamTurn, SEARCH_TOOL } = await import(asUrl(API_PATH));
+const { streamTurn, SEARCH_TOOL, DORK_TOOL } = await import(asUrl(API_PATH));
 const { queryFromToolCall, runSearchToolLoop } = await import(asUrl(LOOP_PATH));
 
 const results = [];
@@ -125,6 +125,80 @@ const toolStream = () =>
     'an id invented for a call is the id its tool message answers',
     Boolean(assistant?.tool_calls?.[0]?.id) && assistant?.tool_calls?.[0]?.id === tool?.tool_call_id,
     `${assistant?.tool_calls?.[0]?.id} vs ${tool?.tool_call_id}`,
+  );
+}
+
+// ── 3c. the dork tool: one operator, its own executor, the same budget ──────
+{
+  const dorked = [];
+  let first = true;
+  const run = await runSearchToolLoop({
+    messages: [{ role: 'user', content: 'find config files on that host' }],
+    tools: [SEARCH_TOOL, DORK_TOOL],
+    stream: async () => {
+      if (first) {
+        first = false;
+        return {
+          ok: true,
+          content: '',
+          toolCalls: [{ id: 'd1', name: 'search_dorks', arguments: '{"query":"site:example.com ext:env"}' }],
+        };
+      }
+      return { ok: true, content: 'answered', toolCalls: [] };
+    },
+    runSearch: async () => {
+      throw new Error('a dork must not run the plain search executor');
+    },
+    runDorks: async (query) => {
+      dorked.push(query);
+      return { count: 2, text: 'dork results' };
+    },
+  });
+  check('a dork call reaches the dork executor', dorked[0] === 'site:example.com ext:env', String(dorked[0]));
+  check('and not the plain one', dorked.length === 1);
+  check('the dork is recorded as a search the model ran', run.searches[0] === 'site:example.com ext:env');
+  check('the loop still finishes with an answer', run.stoppedBy === 'done' && run.content === 'answered');
+  check(
+    'its results are handed back as a tool message',
+    run.transcript.some((message) => message.role === 'tool' && message.content === 'dork results'),
+  );
+
+  // a build without the executor must refuse the tool rather than crash on it
+  let turns = 0;
+  const unavailable = await runSearchToolLoop({
+    messages: [{ role: 'user', content: 'q' }],
+    tools: [DORK_TOOL],
+    stream: async (messages) => {
+      turns += 1;
+      return messages.some((message) => message.role === 'tool')
+        ? { ok: true, content: 'answered', toolCalls: [] }
+        : { ok: true, content: '', toolCalls: [{ id: 'd2', name: 'search_dorks', arguments: '{"query":"site:a.com"}' }] };
+    },
+    runSearch: async () => ({ count: 0, text: '' }),
+  });
+  check('a dork tool with no executor is refused, not run', unavailable.searches.length === 0 && turns === 2);
+  check(
+    'and the refusal says why',
+    unavailable.transcript.some((message) => message.role === 'tool' && /not available/.test(message.content)),
+  );
+
+  // an operatorless dork is a plain search wearing the wrong name: refuse it, do not spend the slot
+  const noOperator = await runSearchToolLoop({
+    messages: [{ role: 'user', content: 'q' }],
+    tools: [DORK_TOOL],
+    stream: async (messages) =>
+      messages.some((message) => message.role === 'tool')
+        ? { ok: true, content: 'answered', toolCalls: [] }
+        : { ok: true, content: '', toolCalls: [{ id: 'd3', name: 'search_dorks', arguments: '{"query":"just some words"}' }] },
+    runSearch: async () => ({ count: 0, text: '' }),
+    runDorks: async () => {
+      throw new Error('a query with no operator is not a dork');
+    },
+  });
+  check('a dork with no operator is refused before it runs', noOperator.searches.length === 0);
+  check(
+    'and the model is told to use the other tool',
+    noOperator.transcript.some((message) => message.role === 'tool' && /search_web/.test(message.content)),
   );
 }
 

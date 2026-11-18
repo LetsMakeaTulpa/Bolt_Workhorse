@@ -330,11 +330,39 @@ export const SEARCH_TOOL: ChatTool = {
   function: {
     name: 'search_web',
     description:
-      'Search the web again. Use it when the sources already provided do not answer the question, are too few, or miss the specific thing asked for. Each call runs the real search engines and returns fresh results.',
+      'Search the web again. Use it when the sources already provided do not answer the question, are too few, or miss the specific thing asked for. Each call runs the real search engines and returns fresh results. Include a URL or domain when you need how a page looked earlier — archived copies are searched alongside live ones.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'The search query. Be specific; operators are allowed.' },
+      },
+      required: ['query'],
+    },
+  },
+};
+
+/**
+ * Dorks as a tool: the model asks for one operator query, the app runs it.
+ *
+ * The lane catalogue is a menu for a person; a model that knows the question and the target can
+ * pick the operator itself ("site:example.com ext:env"), which is the part a fixed lane cannot
+ * guess. Only some engines parse operators — a dork aimed at arXiv is a plain-text search that
+ * spends a budget slot for nothing — so the description says which ones do. One query per call, so
+ * every dork it runs is visible in the transcript and repeatable.
+ */
+export const DORK_TOOL: ChatTool = {
+  type: 'function',
+  function: {
+    name: 'search_dorks',
+    description:
+      'Run one search-engine dork: a query containing at least one operator (site:, inurl:, intitle:, allintitle:, intext:, filetype:, ext:, related:, link:, cache:, before:, after:, a quoted phrase). Use it to reach pages a plain query cannot: files on one domain, exposed config, a directory listing. DuckDuckGo, Brave, Google, Exa, SearXNG and Tavily parse operators; GitHub, arXiv, OpenAlex and Wikipedia ignore them, so a dork aimed there is wasted. Use search_web for a normal query.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The dork query, operators included, e.g. site:example.com ext:env',
+        },
       },
       required: ['query'],
     },
@@ -607,7 +635,17 @@ export async function webSearch(
 
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`Search failed (${resp.status}): ${errText}`);
+    // a rate-limit refusal carries its reason in `message`: "Search failed (429): {json}" would bury
+    // the one part a person can act on (which budget, and when to come back)
+    let reason = errText;
+    try {
+      const parsed = JSON.parse(errText) as { message?: unknown; error?: unknown };
+      if (typeof parsed?.message === 'string' && parsed.message.trim()) reason = parsed.message;
+      else if (typeof parsed?.error === 'string' && parsed.error.trim()) reason = parsed.error;
+    } catch {
+      // not JSON: the body is the reason
+    }
+    throw new Error(`Search failed (${resp.status}): ${reason}`);
   }
 
   return resp.json();

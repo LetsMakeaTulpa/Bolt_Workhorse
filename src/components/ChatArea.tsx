@@ -12,6 +12,9 @@ import { ModelNoticeBanner, type ModelNotice } from './ModelNotice';
 
 interface ChatAreaProps {
   messages: Message[];
+  /** the citation selected in the Sources panel, shown on the newest answer only */
+  focusedCitation?: string | null;
+  onCitationFocus?: (id: string | null) => void;
   isStreaming: boolean;
   streamingContent: string;
   onSendMessage: (content: string) => void;
@@ -45,7 +48,13 @@ interface ChatAreaProps {
   /** the per-account keys table is missing from the project */
   keysUnavailable?: boolean;
   onOpenSettings?: () => void;
-  onRetrySearch?: (query: string) => void;
+  onRetrySearch?: (query: string, options?: { messageId?: string }) => void;
+  /** re-run a question with publication dates weighted and the Recent scope applied */
+  onSearchRecent?: (query: string, options?: { messageId?: string }) => void;
+  /** the last search-only re-run started from each post, by message id */
+  reruns?: Record<string, { query: string; results: Source[]; note?: string }>;
+  /** answer from a re-run's sources without searching */
+  onAnswerWithSources?: (query: string, sources: Source[]) => void;
   /** re-ask a question whose turn ended without an answer */
   onRetryTurn?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
@@ -82,12 +91,24 @@ export function ChatArea({
   keysUnavailable,
   onOpenSettings,
   onRetrySearch,
+  onSearchRecent,
+  reruns,
+  onAnswerWithSources,
   onRetryTurn,
+  focusedCitation,
+  onCitationFocus,
   onSaveResults,
   onFollowUp,
   modelNotice,
   onDismissModelNotice,
 }: ChatAreaProps) {
+  /** the later turn that retried each attempt, so a replaced turn can point forward to it */
+  const retriedBy = new Map<string, string>();
+  for (const msg of messages) if (msg.retry_of) retriedBy.set(msg.retry_of, msg.id);
+  // The panel's results belong to the last run, so its selection belongs to the answer that run
+  // produced: an older answer that happens to cite [2] must not light up when a new [2] is pressed.
+  const newestAnswerId = [...messages].reverse().find((msg) => msg.role === 'assistant')?.id;
+
   return (
     <div className="flex h-full flex-col">
       {modelNotice && <ModelNoticeBanner notice={modelNotice} onDismiss={onDismissModelNotice} />}
@@ -105,10 +126,16 @@ export function ChatArea({
                   query={asked?.content}
                   isStreaming={isStreaming && msg.id === messages[messages.length - 1]?.id && msg.role === 'assistant'}
                   onRetrySearch={onRetrySearch}
+                  onSearchRecent={onSearchRecent}
+                  retriedBy={retriedBy.get(msg.id)}
+                  rerun={reruns?.[msg.id]}
+                  onAnswerWithSources={onAnswerWithSources}
                   onRetryTurn={onRetryTurn}
                   onSaveResults={onSaveResults}
                   onFollowUp={onFollowUp}
                   onRunLane={onRunLane}
+                  focusedCitation={msg.id === newestAnswerId ? focusedCitation : undefined}
+                  onCitationFocus={msg.id === newestAnswerId ? onCitationFocus : undefined}
                 />
               );
             })}

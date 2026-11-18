@@ -25,7 +25,9 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
-const render = (source) => renderToStaticMarkup(React.createElement(SourceCard, { source }));
+const render = (source, extra = {}) => renderToStaticMarkup(React.createElement(SourceCard, { source, ...extra }));
+const renderForced = (source) =>
+  renderToStaticMarkup(React.createElement(SourceCard, { source, forcedRecency: true }));
 const renderRanked = (source, rank) => renderToStaticMarkup(React.createElement(SourceCard, { source, rank }));
 const ago = (days) => new Date(Date.now() - days * 86_400_000).toISOString();
 const card = (overrides = {}) => ({
@@ -130,7 +132,10 @@ const badges = (html) => (html.match(/<span[^>]*class="[^"]*rounded border[^"]*"
   const html = render(card({ published: ago(3) }));
   check('a citation id is shown before the title', /\[1\]<\/span><h4/.test(html.replace(/\s+/g, '')) || /\[1\]/.test(html));
   check('no citation id leaves no marker', !/\[1\]/.test(render(card({ citation_id: '' }))));
-  check('the whole card is one external link', /^<a [^>]*href="https:\/\/example.org\/rrf"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/.test(html));
+  check(
+    'the card carries its own link to the page',
+    /<a [^>]*href="https:\/\/example.org\/rrf"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/.test(html),
+  );
   check('both badges sit in one wrapping row', /flex flex-wrap items-center gap-1/.test(html) && badges(html).length === 2);
 }
 
@@ -157,19 +162,86 @@ const badges = (html) => (html.match(/<span[^>]*class="[^"]*rounded border[^"]*"
 
 // 10. whether the prompt carried the source: the one line in the panel between evidence and results
 {
-  const shown = render(card({ in_prompt: true }));
+  const shown = render(card({ prompt: { inPrompt: true, reason: null } }));
   check('a source the prompt carried says so', /<\/svg>in prompt</.test(shown), shown.match(/<\/svg>[^<]*/)?.[0]);
   check('the model-visible mark is the accent one', /border-accent\/30 bg-accent-subtle text-accent/.test(shown));
   check('its tooltip says the model could read it', /carried this source to the model/.test(shown));
 
-  const hidden = render(card({ in_prompt: false }));
-  check('a panel-only source says the model never saw it', /<\/svg>panel only</.test(hidden), hidden.match(/<\/svg>[^<]*/)?.[0]);
+  const hidden = render(card({ prompt: { inPrompt: false, reason: null } }));
+  check('a source with only the old verdict says it was left out', /<\/svg>panel only</.test(hidden), hidden.match(/<\/svg>[^<]*/)?.[0]);
   check('the panel-only mark is the warning tone', /border-warning\/30 bg-warning-subtle text-warning/.test(hidden));
-  check('its tooltip names the consequence', /never saw it/.test(hidden));
+  check('and no cause is claimed it does not know', /left this source out of the prompt/.test(hidden) && !/never saw it/.test(hidden));
+
+  const trimmed = render(card({ prompt: { inPrompt: true, reason: 'trimmed' } }));
+  check('a source whose page text was cut says so', /<\/svg>in prompt · text cut</.test(trimmed), trimmed.match(/<\/svg>[^<]*/)?.[0]);
+  check('and the tooltip names the cap', /per-source character cap/.test(trimmed));
+
+  const capped = render(card({ prompt: { inPrompt: false, reason: 'capped' } }));
+  check('a source beyond the follow-up cap says why', /<\/svg>over the cap</.test(capped), capped.match(/<\/svg>[^<]*/)?.[0]);
+  check('and the tooltip names the eight-source offer', /first eight sources/.test(capped));
+
+  const noPrompt = render(card({ prompt: { inPrompt: false, reason: 'no-prompt' } }));
+  check('a source left out because no prompt was built says that', /<\/svg>no prompt</.test(noPrompt), noPrompt.match(/<\/svg>[^<]*/)?.[0]);
+  check('and the tooltip says the turn built none', /built no prompt/.test(noPrompt));
 
   const unknown = render(card({}));
   check('a row with no recorded verdict carries no mark', !/>in prompt</.test(unknown) && !/>panel only</.test(unknown));
   check('and the unmarked card keeps its badges unchanged', badges(unknown).length === 2, String(badges(unknown).length));
+}
+
+// 11. a run that forced recency must not leave a badge claiming the date was ignored
+{
+  const timeless = card({ published: ago(400), query: 'history of rome' });
+  check(
+    'a timeless query says the date did not move the result',
+    /date did not move the result/.test(render(timeless)),
+    render(timeless).match(/title="Published[^"]*"/)?.[0],
+  );
+  const forced = renderForced(timeless);
+  check(
+    'a forced run says recency was forced, not ignored',
+    /because recency was forced for this run/.test(forced),
+    forced.match(/title="Published[^"]*"/)?.[0],
+  );
+  check(
+    'and shows the multiplier that run actually applied',
+    /freshness ×1\.[1-9]\d/.test(forced),
+    forced.match(/freshness ×[\d.]+/)?.[0],
+  );
+}
+
+// the card is the selection control: one press lights the answer's sentences citing that id
+{
+  const idle = render(card(), { onFocusCitation: () => {} });
+  check('a card that can select reports itself as a control', /role="button"/.test(idle) && /aria-pressed="false"/.test(idle), 'role');
+  check('and still offers a way to open the page', /href="https:\/\/example\.org\/rrf"/.test(idle), 'open link');
+  const lit = render(card(), { onFocusCitation: () => {}, focusedCitation: '1' });
+  check('a selected card shows the same state as the answer', /aria-pressed="true"/.test(lit) && /bg-accent\/15/.test(lit), 'pressed');
+  const noHandler = render(card());
+  check('without a selection handler the card is just a card', !/role="button"/.test(noHandler));
+
+  const { act, create } = await import('react-test-renderer');
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const seen = [];
+  let tree;
+  await act(async () => {
+    tree = create(React.createElement(SourceCard, { source: card(), onFocusCitation: (id) => seen.push(id) }));
+  });
+  const control = () => tree.root.findByProps({ role: 'button' });
+  await act(async () => {
+    control().props.onClick();
+  });
+  check('pressing a card selects its citation id', seen[0] === '1', seen.join(','));
+
+  const clear = [];
+  let active;
+  await act(async () => {
+    active = create(React.createElement(SourceCard, { source: card(), focusedCitation: '1', onFocusCitation: (id) => clear.push(id) }));
+  });
+  await act(async () => {
+    active.root.findByProps({ role: 'button' }).props.onClick();
+  });
+  check('pressing the selected card clears it', clear[0] === null, String(clear[0]));
 }
 
 const failed = results.filter((row) => !row.ok);

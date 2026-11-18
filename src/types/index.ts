@@ -10,6 +10,21 @@ export interface Conversation {
   updated_at: string;
 }
 
+/**
+ * What one of the model's own extra searches brought in, recorded with the turn.
+ *
+ * Without it a strip that lists the queries it ran says nothing about whether running them was
+ * worth it: the search that found five new pages and the one that found the same three again look
+ * identical, and only one of them earned the budget.
+ */
+export interface ToolSearchYield {
+  query: string;
+  /** results the search returned at all */
+  found: number;
+  /** those this answer did not already have; 0 means the search was redundant */
+  added: number;
+}
+
 export interface Message {
   id: string;
   conversation_id: string;
@@ -26,6 +41,20 @@ export interface Message {
   system_prompt?: string | null;
   /** extra searches the model ran on its own during this turn, oldest first */
   tool_searches?: string[];
+  /** what each of those searches added; absent on rows written before it was recorded */
+  tool_search_yields?: ToolSearchYield[];
+  /**
+   * The message this turn retries, when it is a second attempt at a question that ended without an
+   * answer. Asking again appends a new question and answer, so without this the retry reads as an
+   * unrelated turn beside the stopped one. Null or absent on a first attempt.
+   */
+  retry_of?: string | null;
+  /**
+   * Why the search behind this answer came back empty, when it did: the same lines the Sources panel
+   * carries. Recorded with the answer so the transcript can still name the gaps after a reload — a
+   * collapsed panel must not be the only place the reason exists. Empty on an answer with sources.
+   */
+  gaps?: string[];
 }
 
 export interface Source {
@@ -46,12 +75,43 @@ export interface Source {
   /** which extractor read the page: 'fetch' or 'firecrawl' */
   content_source?: string;
   /**
+   * How many characters of `content` this turn's prompt actually carried, since the prompt caps page
+   * text. Without it a reader cannot tell whether a figure near the end of a page was ever read.
+   * Absent on rows written before it was recorded — unknown, not "the whole page".
+   */
+  prompt_chars?: number;
+  /**
    * whether this source was put in front of the model at all. A run keeps every fused source for
    * the panel but only the first eight of a follow-up search reach the prompt, so without this the
    * transcript cannot tell "the model ignored it" from "the model never saw it". Absent on rows
    * written before it was recorded — unknown, not "not shown".
    */
   in_prompt?: boolean;
+  /**
+   * Why, not just whether. Two sources can both be out of the prompt for different reasons — a
+   * follow-up search overflowed its eight-source offer, or the turn built no prompt at all — and a
+   * source that is in can still have had its page text cut at the cap. Absent on rows that predate
+   * the record, and then only the boolean is known.
+   */
+  prompt_reason?: PromptReason;
+}
+
+/** Why a source is in this turn's prompt, or why it stayed in the panel. */
+export type PromptReason =
+  /** in the prompt, with all the page text the cap allows */
+  | 'given'
+  /** in the prompt, but the page's text was cut at the character cap */
+  | 'trimmed'
+  /** left out: a follow-up search offers the model only its first eight sources */
+  | 'capped'
+  /** left out: this turn never built a prompt of its sources */
+  | 'no-prompt';
+
+/** What a saved answer recorded about one url, and the reason when it recorded one. */
+export interface PromptCoverage {
+  inPrompt: boolean;
+  /** null on a row written before the reason was recorded: the verdict is known, the cause is not */
+  reason: PromptReason | null;
 }
 
 export interface SourceRecord {

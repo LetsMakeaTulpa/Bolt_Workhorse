@@ -21,7 +21,7 @@ interface SettingsModalProps {
   onClose: () => void;
   /** signed-in account; provider keys are stored per user */
   userId?: string;
-  /** whether a search that found nothing ends in a gap report instead of an answer */
+  /** whether an unsourced answer's prose must say that it is unsourced */
   emptyResultBlock: boolean;
   onEmptyResultBlockChange: (enabled: boolean) => void;
 }
@@ -326,10 +326,12 @@ export function SettingsModal({
                 <span className="flex-1 text-[11px] text-text-secondary">{describeEmptyResultBlock(emptyResultBlock)}</span>
               </div>
               <p className="mt-1.5 text-[10px] text-text-muted">
-                On is the honest default: the turn ends in a gap report naming which engines and lanes came back empty,
-                and no answer is invented around the absence. Off lets the model answer from its own knowledge instead —
-                the gaps are not logged and no \u201cnot backed by retrieved sources\u201d line is added, but it is still told
-                not to invent URLs, titles or citation IDs. Stored on this device.
+                The turn ends in an answer either way, and the gaps behind it are listed under the answer, in the activity
+                trail and in the Sources panel in both cases — the search really did come back empty, so the reason is
+                owed. This switch only sets what the answer's own prose must do. On: the model is told to say plainly that
+                it is not backed by retrieved sources. Off: it answers from its own knowledge without being asked to add
+                that line, and is still told not to invent URLs, titles or citation IDs. The unverified badge stays either
+                way. Stored on this device.
               </p>
             </div>
           </div>

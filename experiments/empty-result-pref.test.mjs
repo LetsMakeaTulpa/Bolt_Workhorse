@@ -32,12 +32,23 @@ const check = (name, ok, detail = '') => {
   check('a near miss is not off', parseEmptyResultBlock('offf') === true && parseEmptyResultBlock('no') === true);
 }
 
-// 3. the label says what the setting does, both ways
+// 3. the label says what the setting does, both ways: it governs disclosure, not whether a turn is
+//    answered — the answer always comes, only its wording and the gap list depend on this
 {
   const on = describeEmptyResultBlock(true);
   const off = describeEmptyResultBlock(false);
-  check('the on label mentions the gap report', /gap report/.test(on), on);
-  check('the off label mentions an answer', /answer/.test(off), off);
+  check('the on label asks the answer to say it is unsourced', /unsourced/.test(on), on);
+  check('the off label says the statement is not required', /not required/i.test(off), off);
+  check(
+    'neither label claims a report replaces the answer',
+    !/gap report/i.test(on + ' ' + off) && !/instead of an answer/i.test(on + ' ' + off),
+    `${on} | ${off}`,
+  );
+  check(
+    'neither label claims the gaps disappear',
+    !/no gap list|without gaps/i.test(on + ' ' + off),
+    `${on} | ${off}`,
+  );
   check('the two labels differ', on !== off);
 }
 

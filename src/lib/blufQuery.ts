@@ -17,18 +17,37 @@
  *
  * Everything here is taken from the answer's own words: the query is a phrase from the lead, and
  * each question is a fixed frame around it. Nothing is generated, so nothing can be invented — the
- * worst case is a dull query, never a citation or a fact that was not already there.
+ * worst case is a dull query, never a citation or a fact that was not already there. Which frame is
+ * asked is not fixed, though: `framesFor` reads the dates and the claim ledger the post already
+ * carries, so the questions cannot argue with the freshness receipt printed beside them.
  */
 
 export interface Bluf {
   /** the lead sentences, citations and markdown stripped */
   lead: string;
-  /** the one phrase the lead is about; empty when the lead has no such phrase */
-  subject: string;
-  /** the subject as a search query; empty when there is no subject to search for */
+  /** the one phrase the lead is about, as a search query; empty when it has no such phrase */
   query: string;
-  /** searchable next questions, derived only from a substantive subject */
+  /** searchable next questions, derived from a substantive phrase and the answer's own state */
   followUps: string[];
+}
+
+/**
+ * What the answer already knows about its own evidence, so the questions can meet it where it is.
+ *
+ * All of it is read from the post: the date window of the pages the prompt carried, and the
+ * verdicts the model's own claim ledger gave them. Absent fields mean "nothing known", and the
+ * frames then fall back to the neutral default.
+ */
+export interface AnswerSignals {
+  /** newest publication date among the pages the prompt carried, `YYYY-MM-DD` */
+  newest?: string | null;
+  /** age of that page in whole months; null when nothing is dated */
+  newestAgeMonths?: number | null;
+  /** how many of those pages carry a date, and how many do not */
+  dated?: number;
+  undated?: number;
+  /** the ledger marks at least one claim contested */
+  contested?: boolean;
 }
 
 /** Citation markers, links, and the markdown decoration a model puts around a lead. */
@@ -121,8 +140,7 @@ const bare = (token: string) => token.toLowerCase().replace(/[.'’-]+$/, '');
 
 /** A word that carries subject matter: not grammar, not the vocabulary of answering. */
 function isContent(word: string): boolean {
-  if (STOP.has(word) || META.has(word)) return false;
-  return word.length >= 2 || /\d/.test(word);
+  return !STOP.has(word) && !META.has(word) && word.length >= 2;
 }
 
 interface Subject {
@@ -141,10 +159,14 @@ interface Subject {
  * "reciprocal rank fusion rrf".
  *
  * Adjacency alone is still too generous: "costs fell" is an adjacent pair and not a subject, and a
- * derived question built on it is the generic question this feature is supposed to avoid. The
- * phrase is substantive only when it carries a name — a capitalised word inside the run, a digit,
- * or a term of six letters or more. Otherwise it may still be searched as a query, but it does not
- * earn three questions.
+ * derived question built on it is the generic question this feature is supposed to avoid. So the
+ * phrase earns three questions only when it carries one of three cheap, positive signals that the
+ * words denote something in particular: a name (a capitalised word inside the run), a number, or a
+ * term long enough to be technical rather than grammatical. All three are load-bearing — the length
+ * clause is what keeps the module's best case, a lowercase technical phrase like "surface code
+ * thresholds", from losing its questions — and none needs a dictionary or a model call, which is
+ * the point. A phrase with none of the three is still searched as a query; it simply does not earn
+ * three questions.
  */
 function subjectOf(lead: string): Subject {
   // the lead opens with the bottom line, so its first sentence wins whenever it has a subject at
@@ -188,44 +210,53 @@ function subjectIn(sentence: string): Subject {
   if (words.length < 2) return { phrase: '', substantive: false };
 
   // the first token of a sentence is capitalised by grammar, not by being a name
-  const named = phrase.some((token, index) => index > 0 && /^[A-Z]/.test(token));
-  const longest = Math.max(...words.map((word) => word.replace(/[^a-z0-9]/g, '').length));
+  const named = phrase.slice(1).some((token) => /^[A-Z]/.test(token));
   return {
     phrase: words.join(' '),
-    substantive: named || words.some((word) => /\d/.test(word)) || longest >= 6,
+    substantive:
+      named || words.some((word) => /\d/.test(word) || word.replace(/[^a-z0-9]/g, '').length >= 6),
   };
 }
 
 /**
- * Whether two queries are the same search.
+ * Three questions about the subject, chosen from what the answer already says about itself.
  *
- * Only spelling differs: case, spacing and punctuation are not new searches. A wider query is a
- * different one — "reciprocal rank fusion 2009" asks for more than "reciprocal rank fusion" — so
- * containment is not equality here, and an empty query matches nothing.
+ * The frames are still fixed text — nothing here can invent a fact — but a fixed *set* of frames
+ * produced a row that argued with the strip above it: a window whose newest page was seven years
+ * old still asked "what changed in the past year", and a ledger that already marked a claim
+ * contested was asked whether contrary evidence exists, which is the one thing the answer had just
+ * said. So the time question names the newest date it actually has, an undated answer asks for
+ * dates instead of pretending to have them, and a contested ledger asks which source settles it.
+ * A page older than a year is old enough that "the past year" is a claim about the wrong window.
  */
-export function sameQuery(a: string, b: string): boolean {
-  const key = (query: string) => query.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const left = key(a);
-  return left !== '' && left === key(b);
+function framesFor(phrase: string, signals: AnswerSignals): string[] {
+  const dated = signals.dated ?? 0;
+  const undated = signals.undated ?? 0;
+  const questions = [
+    signals.contested
+      ? `Which source settles ${phrase}?`
+      : `What is the strongest primary source on ${phrase}?`,
+    signals.contested
+      ? `What would resolve the disagreement about ${phrase}?`
+      : `What evidence contradicts ${phrase}?`,
+  ];
+  if (dated === 0 && undated > 0) questions.push(`Which sources date ${phrase}?`);
+  else if (dated > 0 && signals.newest && (signals.newestAgeMonths ?? 0) >= 12) {
+    questions.push(`What has changed about ${phrase} since ${signals.newest}?`);
+  } else questions.push(`What changed about ${phrase} in the past year?`);
+  return questions;
 }
 
 /** A lead as the two things a post can offer: its subject as a query, and questions about it. */
-export function blufOf(prose: string): Bluf {
+export function blufOf(prose: string, signals: AnswerSignals = {}): Bluf {
   const lead = leadOf(prose);
-  const { phrase: subject, substantive } = subjectOf(lead);
-  if (!subject) return { lead, subject: '', query: '', followUps: [] };
+  const { phrase, substantive } = subjectOf(lead);
+  if (!phrase) return { lead, query: '', followUps: [] };
 
   return {
     lead,
-    subject,
-    query: subject,
+    query: phrase,
     // one thin subject would otherwise produce the same three stock questions under every post
-    followUps: substantive
-      ? [
-          `What is the strongest primary source on ${subject}?`,
-          `What evidence contradicts ${subject}?`,
-          `What changed about ${subject} in the past year?`,
-        ]
-      : [],
+    followUps: substantive ? framesFor(phrase, signals) : [],
   };
 }

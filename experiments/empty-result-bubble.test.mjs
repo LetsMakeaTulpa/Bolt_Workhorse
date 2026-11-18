@@ -88,6 +88,21 @@ check('render: an unsourced answer is badged', /Unverified — no sources retrie
 check('render: the badge explains itself on hover', /The search ran and collected nothing/.test(unverified), 'tooltip');
 check('render: the answer is still shown under the badge', /The model answered on its own/.test(unverified));
 
+// the badge names the outcome; the gaps name the cause, in the transcript rather than only in a
+// panel the reader may have collapsed
+const unsourced = {
+  ...message('The model answered on its own.'),
+  search_results: [],
+  gaps: ['Tavily — missing key (TAVILY_API_KEY is not set)', 'Exa answered with nothing'],
+};
+const withGaps = render({ message: unsourced, query: 'investor deck' });
+check('render: the gaps are listed under the unsourced answer', /missing key/.test(withGaps) && /Exa answered with nothing/.test(withGaps));
+check('render: the gap list is labelled as the reason there is no sources', /No sources[^<]*gaps/i.test(withGaps), 'gap heading');
+check('render: the badge and the gap list appear together', /Unverified — no sources retrieved/.test(withGaps));
+check('render: the answer is still above its gaps', /The model answered on its own/.test(withGaps));
+check('render: no gaps recorded means no empty gap block', !/No sources[^<]*gaps/i.test(unverified));
+check('render: the gaps wait for the answer to finish', !/No sources[^<]*gaps/i.test(render({ message: unsourced, isStreaming: true })));
+
 const sourced = render({
   message: {
     ...message('Grounded answer [1].'),
@@ -95,6 +110,52 @@ const sourced = render({
   },
 });
 check('render: an answer with a source is not badged', !/Unverified/.test(sourced));
+check('render: an answer with a source lists no gaps', !/No sources[^<]*gaps/i.test(sourced));
+check('render: the source control is named for searching, not answering', /Search only/.test(sourced) && !/Retry/.test(sourced));
+
+// 4b. a search-only run never rewrote the post, so the post says what the run changed and offers
+//     the one control that would rewrite it
+const firstSource = { title: 'A paper', url: 'https://example.org/a', snippet: 's', source_engine: 'exa', citation_id: '[1]' };
+const ranAgain = render({
+  message: { ...message('Grounded answer [1].'), search_results: [firstSource] },
+  query: 'investor deck',
+  rerun: {
+    query: 'investor deck',
+    results: [firstSource, { title: 'B paper', url: 'https://example.org/b', snippet: 's', source_engine: 'exa', citation_id: '[2]' }],
+  },
+  onRetrySearch: () => {},
+  onAnswerWithSources: () => {},
+});
+check('render: the re-run report says the answer was not rewritten', /this answer is unchanged/.test(ranAgain));
+check(
+  'render: it reports what the run returned and what was new',
+  /returned 2 sources/.test(ranAgain) && /1 not in this answer/.test(ranAgain),
+  'report counts',
+);
+check('render: it offers to answer from those sources', /Answer with these/.test(ranAgain));
+check('render: the post itself is still the old answer', /Grounded answer/.test(ranAgain) && /data-citation="1"/.test(ranAgain));
+
+const nothingNew = render({
+  message: { ...message('Grounded answer [1].'), search_results: [firstSource] },
+  query: 'investor deck',
+  rerun: { query: 'investor deck', results: [{ ...firstSource }] },
+  onRetrySearch: () => {},
+  onAnswerWithSources: () => {},
+});
+check('render: a run that found only known sources says so', /nothing new/.test(nothingNew));
+
+const foundNothing = render({
+  message: { ...message('Grounded answer [1].'), search_results: [firstSource] },
+  query: 'investor deck',
+  rerun: { query: 'investor deck', results: [] },
+  onRetrySearch: () => {},
+  onAnswerWithSources: () => {},
+});
+check(
+  'render: a run that found nothing still reports, with no answer button',
+  /returned 0 sources/.test(foundNothing) && !/Answer with these/.test(foundNothing),
+);
+check('render: no re-run means no report', !/this answer is unchanged/.test(sourced));
 
 const searchOff = render({ message: { ...message('Plain answer, no search run.'), search_enabled: false, search_results: [] } });
 check('render: search off is not unverified', !/Unverified/.test(searchOff));
@@ -125,7 +186,7 @@ const asked = [];
 const retryTurn = (q) => asked.push(q);
 // the retry button is the one carrying a retry title, so an unrelated disabled control cannot
 // make an enabled retry look disabled
-const retryControl = (html) => html.match(/<button[^>]*title="(?:Retry|Ask this again)[^"]*"[^>]*>/)?.[0] ?? '';
+const retryControl = (html) => html.match(/<button[^>]*title="Ask again[^"]*"[^>]*>/)?.[0] ?? '';
 // the attribute, not Tailwind's `disabled:` class on the same tag
 const isDisabled = (tag) => / disabled(?:=""|[\s>])/.test(tag);
 
@@ -133,7 +194,8 @@ const stopped = render({ message: message(STOPPED_SEARCH_NOTE), query: 'investor
 check('render: a stopped search offers Retry', retryControl(stopped) !== '', stopped.slice(0, 120));
 check('render: the stopped retry is enabled when it can act', retryControl(stopped) !== '' && !isDisabled(retryControl(stopped)), retryControl(stopped));
 check('render: the stopped retry says what it will do', /Runs the question again, search and answer, as a fresh turn/.test(stopped));
-check('render: the stopped retry names the question it re-runs', /Retry — search and answer “investor deck” again/.test(stopped));
+check('render: the stopped retry names the question it re-runs', /Ask again — search and answer “investor deck” again/.test(stopped));
+check('render: the whole-turn control is named for asking again', />Ask again<\/button>/.test(stopped), 'turn control');
 
 const replaced = render({ message: message(SUPERSEDED_SEARCH_NOTE), query: 'graph neural network survey', onRetryTurn: retryTurn });
 check('render: a superseded turn offers Retry', retryControl(replaced) !== '');
@@ -141,10 +203,71 @@ check('render: a superseded turn offers Retry', retryControl(replaced) !== '');
 // the note is not an answer, so nothing may judge it as one
 check('render: a stopped turn is not badged as unverified', !/Unverified/.test(stopped));
 check('render: no grounding verdict is passed on a turn with no answer', !/Grounding:/.test(stopped), 'grounding strip on a note');
-check('render: the superseded retry says why it is there', /Ask this again — a newer question replaced it/.test(replaced));
+check('render: the superseded retry says why it is there', /Ask again — a newer question replaced it/.test(replaced));
 
 const errored = render({ message: message('Error: the request failed'), query: 'anything', onRetryTurn: retryTurn });
 check('render: a failed turn offers Retry', retryControl(errored) !== '');
+
+// a retry is a second attempt at one question, not a new question that happens to follow it
+const retriedQuestion = render({
+  message: { ...message('investor deck'), role: 'user', retry_of: 'attempt-1' },
+  query: 'investor deck',
+  onRetryTurn: retryTurn,
+});
+check('render: a retried question says it replaces an attempt', /Retry of the earlier attempt/.test(retriedQuestion));
+check(
+  'render: and links to the turn it replaces',
+  /href="#msg-attempt-1"/.test(retriedQuestion) && /id="msg-/.test(retriedQuestion),
+  retriedQuestion.slice(0, 220),
+);
+check('render: a first attempt carries no retry link', !/Retry of the earlier attempt/.test(stopped));
+
+const replacedAttempt = render({
+  message: message(STOPPED_SEARCH_NOTE),
+  query: 'investor deck',
+  onRetryTurn: retryTurn,
+  retriedBy: 'attempt-2',
+});
+check(
+  'render: the replaced attempt points forward to the retry',
+  /href="#msg-attempt-2"/.test(replacedAttempt) && /Retried below/.test(replacedAttempt),
+  replacedAttempt.slice(0, 220),
+);
+check('render: a turn nobody retried carries no link forward', !/Retried below/.test(stopped));
+
+// the same words that found nothing usually find nothing again, so the wider search is offered too
+const emptyRetry = render({
+  message: message('Error: the request failed'),
+  query: 'investor deck benchmarks 2026',
+  onRetryTurn: retryTurn,
+});
+check('render: a zero-source turn offers a broader retry', /Ask broader/.test(emptyRetry), emptyRetry.slice(0, 300));
+check(
+  'render: the broader retry names the wider question, not the same one',
+  /title="Ask again for a wider search: “investor deck benchmarks”/.test(emptyRetry),
+  emptyRetry.match(/title="Ask again for a wider search[^"]*"/)?.[0],
+);
+
+// nothing to remove means nothing wider to offer: repeating the same words under a new label is the
+// problem this control exists to fix
+const unbroadeanable = render({
+  message: message('Error: the request failed'),
+  query: 'investor deck',
+  onRetryTurn: retryTurn,
+});
+check('render: a question with nothing to widen offers no broader retry', !/Ask broader/.test(unbroadeanable));
+check(
+  'render: it sits beside the verbatim retry rather than replacing it',
+  /Ask again<\/button>/.test(emptyRetry) && /Ask broader/.test(emptyRetry),
+);
+check('render: the hint says the same words may find the same nothing', /same words again/.test(emptyRetry));
+
+const retryWithSources = render({
+  message: { ...message('Error: the request failed'), search_results: [firstSource] },
+  query: 'investor deck',
+  onRetryTurn: retryTurn,
+});
+check('render: a turn that already has its sources gets no wider retry', !/Ask broader/.test(retryWithSources));
 
 check('render: an ordinary answer gets no turn retry', retryControl(answer) === '');
 check('render: a source-backed answer keeps its own Retry, not a second one', retryControl(sourced) === '');
@@ -173,13 +296,78 @@ const withBluf = render({
   onFollowUp: () => {},
 });
 check('render: the bottom line becomes a query chip', /surface code thresholds/.test(withBluf));
-check('render: the chip says the query came from the bottom line', /The bottom line of this answer as a query/.test(withBluf));
+check('render: the chip says the query came from the bottom line', /bottom line of this answer as a query/i.test(withBluf));
 check('render: the query chip is unquoted, so it is a query and not prose', /<span class="truncate">surface code thresholds/.test(withBluf));
 check(
   'render: follow-up questions appear even without a FOLLOW-UPS section',
   /What is the strongest primary source on surface code/.test(withBluf) && /What evidence contradicts/.test(withBluf),
 );
 check('render: the derived chips are questions, not statements', /What changed about surface code[^<]*\?/.test(withBluf));
+
+// the row and the receipt must not argue: an old window cannot be asked about the past year
+const oldWindow = render({
+  message: {
+    ...message(blufAnswer),
+    search_results: [
+      {
+        title: 'Old page',
+        url: 'https://example.org/old',
+        snippet: 's',
+        source_engine: 'exa',
+        citation_id: '[1]',
+        published: '2019-05-01',
+      },
+    ],
+  },
+  query: 'latest surface code results',
+  onRetrySearch: () => {},
+  onFollowUp: () => {},
+});
+check('render: the receipt flags the old window', /Sources dated/.test(oldWindow) && /newest is \d+mo old/.test(oldWindow), oldWindow.slice(0, 300));
+check('render: the derived question names the date the receipt shows', /since 2019-05-01/.test(oldWindow), oldWindow.slice(0, 400));
+check('render: and the row no longer asks about the past year', !/past year/.test(oldWindow));
+
+// the diagnosis now carries its own next move: search the same question for recent pages
+check('render: a diagnosis without a handler offers no control', !/Search recent/.test(oldWindow));
+const recentRuns = [];
+const actionable = render({
+  message: {
+    ...message(blufAnswer),
+    search_results: [
+      { title: 'Old page', url: 'https://example.org/old', snippet: 's', source_engine: 'exa', citation_id: '[1]', published: '2019-05-01' },
+    ],
+  },
+  query: 'latest surface code results',
+  onRetrySearch: () => {},
+  onSearchRecent: (q) => recentRuns.push(q),
+});
+check('render: a stale window offers the recent search', /Search recent/.test(actionable), actionable.slice(0, 300));
+check(
+  'render: the control says what it will change',
+  /publication dates weighted/.test(actionable) && /Recent scope/i.test(actionable),
+  actionable.match(/title="Search this question again[^"]*"/)?.[0],
+);
+check('render: it sits beside the diagnosis, not in place of it', /Sources dated/.test(actionable) && /Search recent/.test(actionable));
+
+const freshWindow = render({
+  message: {
+    ...message(blufAnswer),
+    search_results: [
+      {
+        title: 'New page',
+        url: 'https://example.org/new',
+        snippet: 's',
+        source_engine: 'exa',
+        citation_id: '[1]',
+        published: new Date().toISOString().slice(0, 10),
+      },
+    ],
+  },
+  query: 'latest surface code results',
+  onRetrySearch: () => {},
+  onSearchRecent: (q) => recentRuns.push(q),
+});
+check('render: a fresh window has nothing to fix, so no control', !/Search recent/.test(freshWindow), freshWindow.slice(0, 300));
 check('render: the post is still labelled as a place to keep digging', /Keep digging/.test(withBluf));
 
 const ownQuestions = render({
@@ -210,7 +398,7 @@ const alreadySearched = render({
 });
 check(
   'render: a bottom line the model already searched is not offered again',
-  !/The bottom line of this answer as a query/.test(alreadySearched),
+  !/bottom line of this answer as a query/i.test(alreadySearched),
 );
 check(
   'render: that search still appears under “Searched again”',
@@ -226,12 +414,24 @@ const otherSearched = render({
 });
 check(
   'render: a different extra search leaves the bottom-line chip in place',
-  /The bottom line of this answer as a query/.test(otherSearched),
+  /bottom line of this answer as a query/i.test(otherSearched),
+);
+
+// containment is not equality: a wider model search has not answered the bottom line
+const widerSearched = render({
+  message: { ...message(blufAnswer), tool_searches: ['surface code thresholds 2025'] },
+  query: 'how do surface codes scale?',
+  onRetrySearch: () => {},
+  onFollowUp: () => {},
+});
+check(
+  'render: a wider extra search does not stand in for the bottom line',
+  /bottom line of this answer as a query/i.test(widerSearched),
 );
 
 // a thin phrase is a query, not a subject worth three questions
 const thinSubject = render({ message: message('Costs fell [1].'), query: 'q', onRetrySearch: () => {}, onFollowUp: () => {} });
-check('render: a thin bottom line still gets its search chip', /The bottom line of this answer as a query/.test(thinSubject));
+check('render: a thin bottom line still gets its search chip', /bottom line of this answer as a query/i.test(thinSubject));
 check('render: a thin bottom line gets no derived questions', !/strongest primary source/.test(thinSubject));
 
 check(
@@ -240,6 +440,32 @@ check(
     render({ message: message(blufAnswer), query: 'q', isStreaming: true, onRetrySearch: () => {}, onFollowUp: () => {} }),
   ),
 );
+
+// a productive extra search and a redundant one must not read alike
+const productives = render({
+  message: {
+    ...message('Grounded answer [1].'),
+    search_results: [firstSource],
+    tool_searches: ['surface code thresholds', 'reciprocal rank fusion'],
+    tool_search_yields: [
+      { query: 'surface code thresholds', found: 4, added: 2 },
+      { query: 'reciprocal rank fusion', found: 3, added: 0 },
+    ],
+  },
+  query: 'investor deck',
+  onRetrySearch: () => {},
+});
+check('render: a productive extra search shows what it added', /\+2/.test(productives), productives.slice(0, 300));
+check(
+  'render: a redundant one says nothing new',
+  /nothing new/.test(productives),
+  productives.match(/[^>]*nothing new/)?.[0],
+);
+check(
+  'render: the chip still offers the query back',
+  /title="Search only[^"]*surface code thresholds[^"]*not rewritten"/.test(productives),
+);
+check('render: rows without recorded yields show no invented count', !/\+2|nothing new/.test(sourced));
 
 const failures = results.filter((row) => !row.ok);
 console.log(`\n${results.length - failures.length}/${results.length} assertions passed`);

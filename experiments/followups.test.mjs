@@ -13,7 +13,7 @@ const BLUF = tmpPath('fieldwork-bluf.mjs');
 execFileSync(process.execPath, [ESBUILD, 'src/lib/blufQuery.ts', '--bundle', '--format=esm', `--outfile=${BLUF}`, '--log-level=error'], {
   stdio: 'inherit',
 });
-const { blufOf, sameQuery } = await import(`${asUrl(BLUF)}?t=${Date.now()}`);
+const { blufOf } = await import(`${asUrl(BLUF)}?t=${Date.now()}`);
 
 let passed = 0;
 const failures = [];
@@ -116,7 +116,7 @@ check(
 
 // a bag of two words is not a subject: the words have to be adjacent to count
 const scattered = blufOf('The results were provided, identify what changed and specify the standard.');
-check('bluf: scattered words are not a subject', scattered.subject === '' && scattered.query === '', scattered.query);
+check('bluf: scattered words are not a subject', scattered.query === '', scattered.query);
 check('bluf: and a lead without a subject gets no derived questions', scattered.followUps.length === 0, String(scattered.followUps.length));
 
 // adjacent is not enough to be a subject: "costs fell" is a sentence fragment, and three questions
@@ -127,12 +127,7 @@ check('bluf: a thin subject earns no derived questions', thin.followUps.length =
 // the bottom line is often the first sentence, but an opening that only says what the sources fail
 // to settle must not cost the post its subject when the next sentence names it
 const later = blufOf('The sources do not settle it [1]. Surface code thresholds are the binding constraint.');
-check('bluf: a subject in a later lead sentence is still found', later.subject === 'surface code thresholds', later.subject);
-
-// one search under two labels is one search
-check('sameQuery: case, spacing and punctuation are not a new query', sameQuery('Reciprocal Rank Fusion', 'reciprocal  rank-fusion'));
-check('sameQuery: a wider query is a different query', !sameQuery('reciprocal rank fusion 2009', 'reciprocal rank fusion'));
-check('sameQuery: an empty query matches nothing', !sameQuery('', ''));
+check('bluf: a subject in a later lead sentence is still found', later.query === 'surface code thresholds', later.query);
 
 // ── 11. the questions a post ends with when the model wrote none ──
 check('bluf: three next questions', lede.followUps.length === 3, String(lede.followUps.length));
@@ -141,11 +136,82 @@ check('bluf: each one carries the lead’s subject', lede.followUps.every((q) =>
 
 // the frames are fixed, so a derived question cannot introduce a fact the answer never carried
 const frame = new Set('what is the strongest primary source on evidence contradicts changed about in past year'.split(' '));
-const subject = new Set(lede.subject.split(' '));
+const subject = new Set(lede.query.split(' '));
 check(
   'bluf: a derived question adds no words of its own',
   lede.followUps.every((q) => q.toLowerCase().match(/[a-z0-9%]+/g).every((word) => frame.has(word) || subject.has(word))),
   lede.followUps.join(' | '),
+);
+
+// ── 12. the questions follow what the answer knows about its own evidence ───────────────────
+const stale = blufOf('Surface code thresholds are the binding constraint.', {
+  newest: '2019-05-01',
+  newestAgeMonths: 90,
+  dated: 2,
+  undated: 0,
+});
+check(
+  'bluf: an old window asks since its newest page',
+  /^What has changed about surface code thresholds since 2019-05-01\?$/.test(stale.followUps[2]),
+  stale.followUps[2],
+);
+check('bluf: and does not ask about a past year the receipt contradicts', !/past year/.test(stale.followUps.join(' ')), stale.followUps.join(' | '));
+
+const undatedAnswer = blufOf('Surface code thresholds are the binding constraint.', { dated: 0, undated: 3 });
+check(
+  'bluf: an undated answer asks which sources date it',
+  undatedAnswer.followUps[2] === 'Which sources date surface code thresholds?',
+  undatedAnswer.followUps[2],
+);
+
+const contested = blufOf('Surface code thresholds are the binding constraint.', {
+  contested: true,
+  dated: 1,
+  newest: '2026-08-02',
+  newestAgeMonths: 3,
+});
+check(
+  'bluf: a contested ledger asks which source settles it',
+  contested.followUps[0] === 'Which source settles surface code thresholds?',
+  contested.followUps[0],
+);
+check(
+  'bluf: and asks what would resolve it rather than what could contradict it',
+  contested.followUps[1] === 'What would resolve the disagreement about surface code thresholds?' &&
+    !/contradicts/.test(contested.followUps.join(' ')),
+  contested.followUps[1],
+);
+check('bluf: a fresh window keeps the past-year question', /past year/.test(contested.followUps[2]), contested.followUps[2]);
+check(
+  'bluf: every state still asks exactly three questions about the subject',
+  [stale, undatedAnswer, contested].every(
+    (answer) =>
+      answer.followUps.length === 3 &&
+      answer.followUps.every((q) => q.endsWith('?') && /surface code thresholds/.test(q)),
+  ),
+);
+check(
+  'bluf: no evidence at all keeps the neutral frames',
+  /past year/.test(blufOf('Surface code thresholds are the binding constraint.').followUps[2]),
+);
+
+// the signal-aware frames are still fixed text: the only new words are the date the receipt shows
+const frameWords = new Set(
+  'which source settles what would resolve the disagreement about is the strongest primary on evidence contradicts has changed since in past year date sources'.split(
+    ' ',
+  ),
+);
+check(
+  'bluf: signalled questions add no words of their own beyond the date',
+  [stale, undatedAnswer, contested].every((answer) =>
+    answer.followUps.every((q) =>
+      q
+        .toLowerCase()
+        .match(/[a-z0-9-]+/g)
+        .every((word) => frameWords.has(word) || subject.has(word) || /^\d{4}-\d{2}-\d{2}$/.test(word)),
+    ),
+  ),
+  [stale.followUps, undatedAnswer.followUps, contested.followUps].join(' | '),
 );
 
 console.log(`\n${passed}/${passed + failures.length} assertions passed`);

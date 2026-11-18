@@ -90,6 +90,10 @@ run('build (tsc + vite)', npmCommand, ['run', 'build'], { shell: needsShell });
 // ── 2b. exa + tavily end to end through the handler, parsers and RRF ─────────
 nodeTest('exa/tavily pipeline', 'experiments/web-engine-pipeline.test.mjs');
 
+// ── 2c. the public anon key reaches web-search: the counter refuses overspend before any spend,
+// and the compiler's model call is bounded and reported rather than hidden ──
+nodeTest('web-search limits', 'experiments/websearch-limits.test.mjs');
+
 // ── 3. model fallback + reliability (the suite bundles the real api.ts) ──────
 nodeTest('model fallback chain', 'experiments/model-fallback.test.mjs');
 
@@ -177,6 +181,7 @@ nodeTest('chat turn reliability', 'experiments/chat-reliability.test.mjs');
 nodeTest('answer grounding', 'experiments/grounding.test.mjs');
 nodeTest('machine trace', 'experiments/machine-trace.test.mjs');
 nodeTest('freshness receipt', 'experiments/freshness.test.mjs');
+nodeTest('client engines', 'experiments/client-engines.test.mjs');
 
 // ── 4g2. the same property from the outside, through the rendered hook ───────
 if (existsSync(join('node_modules', 'react-test-renderer'))) {
@@ -221,6 +226,9 @@ if (existsSync(join('node_modules', 'react-test-renderer'))) {
     console.log(`→ source card badges\n  FAILED\n    ${err.message}`);
   }
 }
+
+// ── 4i2b. the Sources tab says how much of its list reached the model ───────
+nodeTest('source coverage summary', 'experiments/source-coverage.test.mjs');
 
 // ── 4i3. an empty Sources panel still explains itself and offers a next move ──
 {
@@ -270,7 +278,15 @@ nodeTest('empty result', 'experiments/empty-result.test.mjs');
     console.log(`→ empty result bubble\n  FAILED\n    ${err.message}`);
   }
 }
+// ── 4o2. a citation and its source row light up the same sentences ───────────
+if (existsSync(join('node_modules', 'react-test-renderer'))) {
+  nodeTest('citation focus', 'experiments/citation-focus.test.mjs');
+} else {
+  skip('citation focus', 'react-test-renderer missing from node_modules (it is a devDependency: run npm install)');
+}
 nodeTest('prompt variant', 'experiments/prompt-variant.test.mjs');
+// ── 4p2. a retry answers from the sources the failed turn already stored ────
+nodeTest('retry reuses stored sources', 'experiments/reuse-sources.test.mjs');
 // ── 4p. the panel's collapse is remembered on the device ─────────────────────
 nodeTest('panel collapse preference', 'experiments/panel-pref.test.mjs');
 nodeTest('ranking compare', 'experiments/ranking-compare.test.mjs');

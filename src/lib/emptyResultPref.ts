@@ -1,11 +1,13 @@
 /**
- * Whether an empty search still ends in the gap-report block.
+ * Whether an unsourced answer's prose must say that it is unsourced.
  *
- * The block is the honest default: a search that collected nothing says so, names the gaps, and
- * refuses to answer around the absence. It is also a wall between the question and the model's own
- * knowledge, and sometimes the answer is what is wanted — so it can be turned off. Kept on the
- * device rather than in the database: it changes what this screen does with a turn, not what the
- * account is, and it must be readable synchronously when the first turn runs.
+ * On is the honest default: the model is told to say plainly that its answer is not backed by
+ * retrieved sources. Off still answers, and the model is not asked to add that line. Nothing else
+ * depends on it — the unverified badge and the turn's gaps (which engines and lanes came back empty)
+ * are recorded and shown either way, because the search really did come back empty and the reader is
+ * owed the reason. Kept on the device rather than in the database: it changes what this screen asks
+ * of one answer, not what the account is, and it must be readable synchronously when the first turn
+ * runs.
  */
 const KEY = 'fieldwork.empty-result-block.v1';
 
@@ -18,8 +20,8 @@ export function parseEmptyResultBlock(raw: string | null | undefined): boolean {
 /** What the toggle should say, given the stored value. */
 export function describeEmptyResultBlock(enabled: boolean): string {
   return enabled
-    ? 'On — an empty search ends in a gap report instead of an answer'
-    : 'Off — an empty search still gets an answer from the model';
+    ? 'On — the answer must say plainly that it is unsourced'
+    : 'Off — the answer is not required to say it is unsourced';
 }
 
 export function readEmptyResultBlock(): boolean {

@@ -15,7 +15,7 @@ if (!process.env.BUBBLE_MODULE) {
   ]);
 }
 
-const { readInFull, parseToolSearches, promptCoverage, summarizeMachine, usedSources } = await import(asUrl(LIB));
+const { readInFull, parseSearchYields, parseToolSearches, promptCoverage, summarizeMachine, usedSources } = await import(asUrl(LIB));
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -44,8 +44,59 @@ const source = (citation, title, extra = {}) => ({
   check('they keep their citation ids', read.map((item) => item.citation).join(',') === '[1],[3]', read.map((item) => item.citation).join(','));
   check('rank order is kept', read[0].title === 'Read page' && read[1].title === 'Rendered page');
   check('the extractor is reported', read[0].via === 'fetch' && read[1].via === 'firecrawl');
+  check('the text the prompt carried comes with it', read[0].text === 'the page itself', read[0].text);
+  check(
+    'its length is the length the model read',
+    read[0].given === 'the page itself'.length && read[0].stored === 'the page itself'.length,
+    `${read[0].given}/${read[0].stored}`,
+  );
   check('a source with no citation id falls back to its position', readInFull([source(undefined, 'Anon', { content: 'x' })])[0].citation === '[1]');
   check('an empty result list has nothing to show', readInFull([]).length === 0);
+}
+
+// ── 1b. the text is the prompt's text, cap and all ───────────────────────────
+{
+  const page = 'word '.repeat(1200); // 6,000 characters: more than any prompt carries
+  const standard = readInFull([source('[1]', 'Long page', { content: page })])[0];
+  check('a long page is cut where the prompt cuts it', standard.given <= 4000 && standard.text.endsWith('…'), String(standard.given));
+  check('the whole page length is still reported', standard.stored === page.trim().length, String(standard.stored));
+  check('never more than the prompt carried', standard.given < standard.stored);
+
+  const followUp = readInFull([source('[1]', 'Long page', { content: page, prompt_chars: 3000 })])[0];
+  check(
+    'a cap recorded with the row is honoured',
+    followUp.given <= 3000 && followUp.given < standard.given,
+    `${followUp.given} vs ${standard.given}`,
+  );
+
+  const short = readInFull([source('[1]', 'Short page', { content: '  one line  ' })])[0];
+  check('a short page is given whole, trimmed', short.text === 'one line' && short.given === short.stored, short.text);
+}
+
+// ── 1c. what each of the model's own searches added ─────────────────────────
+{
+  const yields = parseSearchYields([
+    { query: 'rrf k constant', found: 5, added: 3 },
+    { query: 'reciprocal rank fusion 2009', found: 4, added: 0 },
+    { query: 'rrf k constant', found: 6, added: 1 },
+    { query: 'no counts' },
+    'a bare string from an older row',
+  ]);
+  check('a recorded search keeps the count it added', yields['rrf k constant']?.added === 1, JSON.stringify(yields['rrf k constant']));
+  check('a repeat query keeps its newest record', yields['rrf k constant']?.found === 6, String(yields['rrf k constant']?.found));
+  check('a redundant search is zero new, not unknown', yields['reciprocal rank fusion 2009']?.added === 0);
+  check('an entry without counts records nothing', !('no counts' in yields) && Object.keys(yields).length === 2);
+  check(
+    'a row written before the counts claims none',
+    Object.keys(parseSearchYields(undefined)).length === 0 && Object.keys(parseSearchYields(['x'])).length === 0,
+  );
+
+  const traced = summarizeMachine({
+    search_results: [],
+    tool_searches: ['rrf k constant'],
+    tool_search_yields: [{ query: 'rrf k constant', found: 1, added: 0 }],
+  });
+  check('the strip receives the yields with the searches', traced.searchYields['rrf k constant']?.added === 0 && traced.anything);
 }
 
 // ── 2. the model's own searches ─────────────────────────────────────────────
@@ -102,7 +153,6 @@ const source = (citation, title, extra = {}) => ({
     }).length === 0,
   );
 
-
   const unmarked = summarizeMachine({ search_results: [source('[1]', 'A')], tool_searches: [] });
   check('a row written before the mark claims nothing', unmarked.given === null && unmarked.panelOnly === 0 && unmarked.anything === false);
 }
@@ -140,10 +190,17 @@ const source = (citation, title, extra = {}) => ({
 
   check('the strip says what was read in full', html.includes('Read in full'));
   check('and names the source', html.includes('Read in full paper') && html.includes('[1]'));
-  check('the page is linked', html.includes('https://a.test/1'));
+  check('the read entry is a control', /<button[^>]*data-read="https:\/\/a\.test\/1"/.test(html), 'read entry');
+  check('the entry shows the length the prompt carried', /font-mono text-text-muted">15<\/span>/.test(html), 'entry length');
+  check('the entry says which extractor read it', /Open the page text[^"]*read by fetch/.test(html), 'entry title');
+  check('the text stays closed until it is asked for', !html.includes('exactly as the model read it'));
   check('the strip says what the model searched', html.includes('Searched again') && html.includes('rrf benchmark numbers'));
-  check('the query is a button that runs it again', /title="Run this search again: rrf benchmark numbers"/.test(html));
-  const queryButton = html.match(/<button[^>]*Run this search again[^>]*>/)?.[0] ?? '';
+  check(
+    'the query says it only searches',
+    /title="Search only[^"]*rrf benchmark numbers[^"]*not rewritten"/.test(html),
+    'chip title',
+  );
+  const queryButton = html.match(/<button[^>]*Search only[^>]*>/)?.[0] ?? '';
   check('the button is enabled when there is a handler', queryButton !== '' && !/\sdisabled(=|\s|>)/.test(queryButton), queryButton.slice(0, 80));
 
   const plain = renderToStaticMarkup(
@@ -262,29 +319,110 @@ const source = (citation, title, extra = {}) => ({
   );
 }
 
+// ── 5. opening the text the model was given ─────────────────────────────────
+{
+  let renderer = null;
+  try {
+    renderer = await import('react-test-renderer');
+  } catch {
+    console.log('SKIP  the page text opens on click — react-test-renderer missing from node_modules');
+  }
+  if (renderer) {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    const React = await import('react');
+    const { MessageBubble } = await import(asUrl(BUBBLE));
+    let tree;
+    await renderer.act(async () => {
+      tree = renderer.create(
+        React.createElement(MessageBubble, {
+          message: {
+            id: 'm2',
+            conversation_id: 'c1',
+            role: 'assistant',
+            content: 'The paper reports an nDCG of 0.42 [1].',
+            model: 'Qwen/Qwen2.5-7B-Instruct',
+            search_enabled: true,
+            search_results: [
+              source('[1]', 'Read in full paper', { content: 'an ndcg of 0.42', content_source: 'firecrawl' }),
+            ],
+            tool_searches: [],
+            created_at: new Date().toISOString(),
+          },
+          isStreaming: false,
+          query: 'what is the nDCG',
+        }),
+      );
+    });
+    const nodes = () => {
+      const all = [];
+      const walk = (node) => {
+        if (!node || typeof node === 'string') return;
+        all.push(node);
+        (node.children ?? []).forEach(walk);
+      };
+      walk(tree.root);
+      return all;
+    };
+    // the rendered text only: titles are attributes, so a claim in a tooltip cannot pass for text
+    const text = (node) => {
+      if (typeof node === 'string') return node;
+      if (Array.isArray(node)) return node.map(text).join('');
+      return node && node.children ? text(node.children) : '';
+    };
+    const shown = () => text(tree.toJSON());
+
+    check('the page text is not on screen before a click', !shown().includes('an ndcg of 0.42'));
+    const chip = nodes().find((node) => node.type === 'button' && node.props['data-read']);
+    check('the read entry is mounted as a control', Boolean(chip));
+    await renderer.act(async () => {
+      chip.props.onClick();
+    });
+    check('opening it shows the exact text the model read', shown().includes('an ndcg of 0.42'));
+    check('with its length and the extractor', shown().includes('15 chars given') && shown().includes('read by firecrawl'));
+    const close = nodes().find((node) => node.type === 'button' && node.props['aria-label'] === 'Close the page text');
+    await renderer.act(async () => {
+      close.props.onClick();
+    });
+    check('closing it puts the text away', !shown().includes('an ndcg of 0.42') && !shown().includes('read by firecrawl'));
+  }
+}
+
 // ── the Sources panel's marker: which stored rows the model was actually given ──
 {
   const coverage = promptCoverage([
     {
       search_results: [
-        source('[1]', 'Read by the model', { in_prompt: true }),
-        source('[2]', 'Panel only', { in_prompt: false }),
-        source('[3]', 'Saved before the mark'),
+        source('[1]', 'Read by the model', { in_prompt: true, prompt_reason: 'given' }),
+        source('[2]', 'Over the cap', { in_prompt: false, prompt_reason: 'capped' }),
+        source('[3]', 'Panel only, no reason recorded', { in_prompt: false }),
+        source('[4]', 'Saved before the mark'),
       ],
     },
   ]);
   check(
     'a marked row carries its verdict into the panel',
-    coverage.get('https://a.test/1') === true && coverage.get('https://a.test/2') === false,
+    coverage.get('https://a.test/1')?.inPrompt === true && coverage.get('https://a.test/2')?.inPrompt === false,
     JSON.stringify([...coverage]),
   );
-  check('an unmarked legacy row stays unknown, not "never shown"', !coverage.has('https://a.test/3'));
+  check('a reasoned row carries the reason too', coverage.get('https://a.test/2')?.reason === 'capped');
+  check(
+    'a boolean-only row keeps its verdict without inventing a reason',
+    coverage.get('https://a.test/3')?.reason === null && coverage.get('https://a.test/3')?.inPrompt === false,
+  );
+  check('an unmarked legacy row stays unknown, not "never shown"', !coverage.has('https://a.test/4'));
+  check(
+    'a trimmed row is still a carried row',
+    promptCoverage([{ search_results: [source('[1]', 'Long page', { prompt_reason: 'trimmed' })] }]).get('https://a.test/1')?.inPrompt === true,
+  );
 
   const newest = promptCoverage([
-    { search_results: [source('[1]', 'shown once', { in_prompt: true })] },
-    { search_results: [source('[1]', 'not shown later', { in_prompt: false })] },
+    { search_results: [source('[1]', 'shown once', { in_prompt: true, prompt_reason: 'given' })] },
+    { search_results: [source('[1]', 'not shown later', { in_prompt: false, prompt_reason: 'no-prompt' })] },
   ]);
-  check('the newest turn that carried a url decides', newest.get('https://a.test/1') === false);
+  check(
+    'the newest turn that carried a url decides',
+    newest.get('https://a.test/1')?.inPrompt === false && newest.get('https://a.test/1')?.reason === 'no-prompt',
+  );
 
   const untouched = promptCoverage([{ search_results: [source('[1]', 'unmarked')] }]);
   check('a conversation with no marks yields nothing to claim', untouched.size === 0, String(untouched.size));

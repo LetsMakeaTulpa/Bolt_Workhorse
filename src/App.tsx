@@ -2,21 +2,21 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearch } from './hooks/useSearch';
 import { useEngineKeys } from './hooks/useEngineKeys';
 import { supabase } from './lib/supabase';
-import { fetchModels, fallbackChain, SEARCH_TOOL, streamTurn, type ChatStreamCallbacks } from './lib/api';
+import { fetchModels, fallbackChain, DORK_TOOL, SEARCH_TOOL, streamTurn, type ChatStreamCallbacks } from './lib/api';
 import { runSearchToolLoop, type ToolMessage } from './lib/searchTool';
-import { DEFAULT_ENGINES } from './lib/engines';
+import { DEFAULT_ENGINES, DORK_ENGINES, SEARCH_SCOPES } from './lib/engines';
 import { describePromptVariant, readPromptVariant, systemPromptFor } from './lib/promptVariant';
 import { buildGapReport } from './lib/emptyResult';
 import type {
   Conversation, Message, Source, ModelInfo, Finding,
-  ResearchPreset, ActivityLog, SourceRecord,
+  ResearchPreset, ActivityLog, SourceRecord, ToolSearchYield,
 } from './types';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { InvestigationPanel, type PanelTab } from './components/InvestigationPanel';
 import type { ModelNotice } from './components/ModelNotice';
 import { readEmptyResultBlock, writeEmptyResultBlock } from './lib/emptyResultPref';
-import { formatSourceContext } from './lib/sourceContext';
+import { FOLLOW_UP_CONTENT_CHARS, formatSourceContext, PROMPT_CONTENT_CHARS, promptReasonFor } from './lib/sourceContext';
 import { readPanelCollapsed, writePanelCollapsed } from './lib/panelPref';
 import { promptCoverage } from './lib/machineTrace';
 import { ModelSelector } from './components/ModelSelector';
@@ -26,6 +26,7 @@ import { AuthScreen } from './components/AuthScreen';
 import type { Session } from '@supabase/supabase-js';
 import { Menu, Settings, Search, Compass, PanelRightClose, PanelRight, Activity, Globe, Shield, Radar, LogOut, Loader2 } from 'lucide-react';
 import { decideAfterSearch, STOPPED_SEARCH_NOTE, SUPERSEDED_SEARCH_NOTE } from './lib/turnDecision';
+import { reuseForRetry } from './lib/reuseSources';
 import { insertRowTolerant, noteDroppedColumns } from './lib/messageInsert';
 
 const DEFAULT_MODEL = 'xortron/RESTRICTED-RESEARCH-MODEL';
@@ -55,12 +56,20 @@ export default function App() {
   // that has to be closed again on every reload
   const [showSearchPanel, setShowSearchPanel] = useState(() => !readPanelCollapsed());
   const [panelTab, setPanelTab] = useState<PanelTab>('map');
+  /**
+   * The citation selected on either side — a marker in the newest answer or a card in the panel.
+   * One id is all it takes: both directions already read the mapping the grounding pass builds, so
+   * no new row or column is stored for a selection.
+   */
+  const [citationFocus, setCitationFocus] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [presets, setPresets] = useState<ResearchPreset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('general');
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [sources, setSources] = useState<SourceRecord[]>([]);
+  /** what the last search-only re-run found, per post, so the post can say what it changed */
+  const [rerunReports, setRerunReports] = useState<Record<string, { query: string; results: Source[] }>>({});
   const [streamingContent, setStreamingContent] = useState('');
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -267,6 +276,8 @@ export default function App() {
     issues: engineIssues,
     laneYield,
     relaxedGate,
+    forcedRecency,
+    queriesUsed,
     lastQuery: lastSearchQuery,
     performSearch,
     cancelSearch: cancelSearchRun,
@@ -293,11 +304,18 @@ export default function App() {
     abortStream();
   };
 
-  const handleSendMessage = async (content: string, options?: { forceSearch?: boolean }) => {
+  const handleSendMessage = async (
+    content: string,
+    options?: { forceSearch?: boolean; reused?: Source[] | null; retryOf?: string },
+  ) => {
     if (!content.trim() || isStreaming) return;
     // a notice belongs to the answer it describes, not to the next question
     setModelNotice(null);
-    const shouldSearch = searchEnabled || options?.forceSearch === true;
+    // so does a citation selection: the ids are about to be assigned again
+    setCitationFocus(null);
+    // a retry that already has its sources still wants the answer pipeline, even with search off
+    const reused = options?.reused ?? [];
+    const shouldSearch = searchEnabled || options?.forceSearch === true || reused.length > 0;
     const turnId = turnRef.current + 1;
     turnRef.current = turnId;
     const turnSuperseded = () => turnRef.current !== turnId;
@@ -315,12 +333,19 @@ export default function App() {
       content,
       search_enabled: shouldSearch,
       search_results: [],
+      // a retried turn says which attempt it replaces, so the transcript can link the two
+      retry_of: options?.retryOf ?? null,
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userMsg]);
 
-    await supabase.from('messages').insert({
-      conversation_id: conv.id, role: 'user', content, search_enabled: shouldSearch,
+    // tolerant, like the answers: a database without the column keeps the question and the retry
+    await insertRowTolerant<Message>(supabase, 'messages', {
+      conversation_id: conv.id,
+      role: 'user',
+      content,
+      search_enabled: shouldSearch,
+      retry_of: options?.retryOf ?? null,
     });
 
     if (messages.length === 0) {
@@ -330,7 +355,22 @@ export default function App() {
     }
 
     let searchResultsData: Source[] = [];
-    if (shouldSearch) {
+    // Why this turn found nothing, kept for the transcript as well as the trail: the answer is
+    // labelled unverified, and the gaps are the explanation that label leaves out.
+    let gapLines: string[] = [];
+    if (shouldSearch && reused.length > 0) {
+      // Retry after the sources were already retrieved: regenerate from that same list instead of
+      // asking every engine again. Same sources and citation ids, no provider cost, and nothing new
+      // to confuse a comparison with the attempt that failed.
+      searchResultsData = reused;
+      await logActivity(
+        conv.id,
+        'search',
+        `Reusing ${reused.length} source${reused.length === 1 ? '' : 's'} already retrieved — answering without querying an engine`,
+        { sources: reused.length, reused: true },
+        'completed',
+      );
+    } else if (shouldSearch) {
       searchResultsData = await performSearch(content, conv.id);
       // A stopped or replaced search used to end the turn right here, with nothing under the
       // question: that reads as the app not answering at all, and it is what left people asking
@@ -389,13 +429,16 @@ export default function App() {
 
       // Chat with search built in: a thin search run informs the answer, it never replaces it. The
       // gaps are recorded and the model answers from its own knowledge, told to say it is unverified.
-      if (searchResultsData.length === 0 && emptyResultBlock) {
+      if (searchResultsData.length === 0) {
+        // Recorded whatever the disclosure preference says. The answer is unverified either way, so
+        // the transcript must be able to explain why; the preference only changes the prose.
         const report = buildGapReport({
           query: content,
           engines,
           issues: engineIssues,
           laneYield: laneYield,
         });
+        gapLines = report.gaps;
         await logActivity(
           conv.id,
           'search',
@@ -415,12 +458,16 @@ export default function App() {
       content: activePrompt,
     }];
 
-    // every source the prompt carries this turn; any other fused source stays in the panel only
-    const inPrompt = new Set<string>();
+    // every source the prompt carries this turn, and how much of its page text the prompt carried:
+    // any other fused source stays in the panel only
+    const inPrompt = new Map<string, number>();
+    // the tail of a follow-up search, dropped on purpose: a source that is out of the prompt for
+    // this reason must not read like one the turn simply never got to
+    const capped = new Set<string>();
 
     if (searchResultsData.length > 0) {
       // the top sources carry the text of the page itself, when it could be read
-      for (const source of searchResultsData) inPrompt.add(source.url);
+      for (const source of searchResultsData) inPrompt.set(source.url, PROMPT_CONTENT_CHARS);
       const searchContext = formatSourceContext(searchResultsData);
       llmMessages.push({
         role: 'system',
@@ -448,11 +495,21 @@ export default function App() {
     let fullContent = '';
     // the model's own searches, so the transcript can show them and offer each query back
     let toolSearches: string[] = [];
+    // what each of those searches added, so the strip can tell a productive one from a redundant one
+    let toolSearchYields: ToolSearchYield[] = [];
     const assistantMsgId = crypto.randomUUID();
     // the saved row records which sources the prompt carried, so the strip can say how many of the
     // fused list the model actually read rather than leaving "ignored" and "never shown" alike
     const storedResults = () =>
-      searchResultsData.map((source) => ({ ...source, in_prompt: inPrompt.has(source.url) }));
+      searchResultsData.map((source) => {
+        const cap = inPrompt.get(source.url);
+        return {
+          ...source,
+          in_prompt: cap !== undefined,
+          prompt_chars: cap,
+          prompt_reason: promptReasonFor(source, cap, capped.has(source.url)),
+        };
+      });
     const assistantMsg: Message = {
       id: assistantMsgId,
       conversation_id: conv.id,
@@ -462,6 +519,8 @@ export default function App() {
       search_enabled: searchEnabled,
       search_results: storedResults(),
       tool_searches: toolSearches,
+      tool_search_yields: toolSearchYields,
+      gaps: gapLines,
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, assistantMsg]);
@@ -510,6 +569,8 @@ export default function App() {
           conversation_id: conv!.id, role: 'assistant', content: finalContent,
           model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
           system_prompt: activePrompt, tool_searches: toolSearches,
+          tool_search_yields: toolSearchYields,
+          gaps: searchResultsData.length === 0 ? gapLines : [],
         });
         await noteDroppedColumns(dropped, async (message, detail) => {
           await logActivity(conv!.id, 'analyze', message, detail, 'completed');
@@ -558,6 +619,8 @@ export default function App() {
             conversation_id: conv!.id, role: 'assistant', content: stopped,
             model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
             system_prompt: activePrompt, tool_searches: toolSearches,
+            tool_search_yields: toolSearchYields,
+            gaps: searchResultsData.length === 0 ? gapLines : [],
           });
           await noteDroppedColumns(stoppedDropped, async (message, detail) => {
             await logActivity(conv!.id, 'analyze', message, detail, 'completed');
@@ -578,6 +641,59 @@ export default function App() {
       },
     };
 
+    /**
+     * Run one of the model's own searches and fold what it found into this answer's evidence.
+     *
+     * A dork skips the query compiler — the operator is the request, and rewriting the query would
+     * drop the thing that was asked for — and stays on the engines that actually parse operators,
+     * since a dork sent to arXiv is a plain-text search that spends a budget slot for nothing.
+     */
+    const runToolSearch = async (query: string, options: { dork?: boolean } = {}) => {
+      if (!searchEnabled) {
+        return { count: 0, text: 'Search is switched off for this turn. Answer from what you have.' };
+      }
+      const dorkEngines = options.dork ? engines.filter((engine) => DORK_ENGINES.has(engine)) : null;
+      if (dorkEngines && dorkEngines.length === 0) {
+        return {
+          count: 0,
+          text: `No selected engine parses dork operators, so "${query}" would be a plain-text search. Answer with what you already have, or use search_web for a normal query.`,
+        };
+      }
+      // the sources this answer already holds, so "new" means new to the evidence, not new to the run
+      const known = new Set(searchResultsData.map((source) => source.url));
+      const found = await performSearch(query, conv!.id, {
+        keepStreaming: true,
+        compileQueries: !options.dork,
+        ...(dorkEngines ? { engines: dorkEngines } : {}),
+      });
+      const added = found.filter((source) => !known.has(source.url)).length;
+      toolSearchYields = [...toolSearchYields, { query, found: found.length, added }];
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantMsgId ? { ...m, tool_search_yields: toolSearchYields } : m)),
+      );
+      if (found.length === 0) {
+        return { count: 0, text: `Search for "${query}" returned no usable sources. Answer with what you already have.` };
+      }
+      // the answer now has sources behind it: the bubble must stop saying otherwise, and the row
+      // that gets saved must remember them
+      searchResultsData = [...searchResultsData, ...found];
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId
+            ? // the answer now has sources behind it, so the gaps it started with no longer apply
+              { ...m, search_results: storedResults(), gaps: [] }
+            : m,
+        ),
+      );
+      // only the first eight of a follow-up search reach the model; the rest are panel-only, and the
+      // row says so: "beyond the cap" is a different omission from "nothing was ever prompted"
+      const offered = found.slice(0, 8);
+      for (const source of offered) inPrompt.set(source.url, FOLLOW_UP_CONTENT_CHARS);
+      for (const source of found.slice(8)) capped.add(source.url);
+      const block = formatSourceContext(offered, { contentChars: FOLLOW_UP_CONTENT_CHARS });
+      return { count: found.length, text: `Search results for "${query}":\n\n${block}` };
+    };
+
     // The model may search again when the first pass was thin. Each call runs the real engines and
     // keeps streaming — performSearch normally aborts a running stream, so it is told not to.
     let toolRun: Awaited<ReturnType<typeof runSearchToolLoop>>;
@@ -585,13 +701,20 @@ export default function App() {
       toolRun = await runSearchToolLoop({
       messages: llmMessages as ToolMessage[],
       // with search off the model is not offered the tool at all
-      tools: searchEnabled ? [SEARCH_TOOL] : [],
+      // both tools, so the model can choose operators when a plain query cannot reach the page
+      tools: searchEnabled ? [SEARCH_TOOL, DORK_TOOL] : [],
       maxSearches: 2,
-      onSearch: (query) => {
+      onSearch: (query, _index, tool) => {
         toolSearches = [...toolSearches, query];
         // the bubble owns the list while the answer streams, so the strip appears as it happens
         setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, tool_searches: toolSearches } : m)));
-        void logActivity(conv!.id, 'search', `Model searched again: "${query}"`, { query, tool: 'search_web' }, 'completed');
+        void logActivity(
+          conv!.id,
+          'search',
+          tool === 'search_dorks' ? `Model ran a dork: "${query}"` : `Model searched again: "${query}"`,
+          { query, tool },
+          'completed',
+        );
       },
       stream: (turnMessages, turnTools) =>
         streamTurn(
@@ -600,26 +723,8 @@ export default function App() {
           { onToken: callbacks.onToken, onModelSwitch: callbacks.onModelSwitch, onModelServed: callbacks.onModelServed },
           { fallbacks: chain, signal: streamController.signal, tools: turnTools },
         ),
-      runSearch: async (query) => {
-        if (!searchEnabled) {
-          return { count: 0, text: 'Search is switched off for this turn. Answer from what you have.' };
-        }
-        const found = await performSearch(query, conv!.id, { keepStreaming: true });
-        if (found.length === 0) {
-          return { count: 0, text: `Search for "${query}" returned no usable sources. Answer with what you already have.` };
-        }
-        // the answer now has sources behind it: the bubble must stop saying otherwise, and the row
-        // that gets saved must remember them
-        searchResultsData = [...searchResultsData, ...found];
-        setMessages((prev) =>
-          prev.map((m) => (m.id === assistantMsgId ? { ...m, search_results: storedResults() } : m)),
-        );
-        // only the first eight of a follow-up search reach the model; the rest are panel-only
-        const offered = found.slice(0, 8);
-        for (const source of offered) inPrompt.add(source.url);
-        const block = formatSourceContext(offered, { contentChars: 3000 });
-        return { count: found.length, text: `Search results for "${query}":\n\n${block}` };
-      },
+      runSearch: (query) => runToolSearch(query),
+      runDorks: (query) => runToolSearch(query, { dork: true }),
       });
     } catch (error) {
       // the composer is disabled while streaming, so an exception escaping here would leave the app
@@ -647,8 +752,101 @@ export default function App() {
     }
   };
 
-  const handleRetrySearch = async (query: string) => {
-    if (currentConversation) await performSearch(query, currentConversation.id);
+  /**
+   * Run a search on its own.
+   *
+   * It never rewrites an answer, so the post it was pressed from is told what the run found — how
+   * many sources, how many it did not already have — and offered the one control that would update
+   * it, rather than leaving a button that looks like it answered and did not.
+   */
+  const handleRetrySearch = async (
+    query: string,
+    options?: { messageId?: string; forceRecent?: boolean },
+  ) => {
+    if (!currentConversation) return;
+    const recent = options?.forceRecent === true;
+    // the receipt's move: the same question, ranked with dates weighted, on the scope that carries
+    // live pages. It does not rewrite the engine selection the composer shows — a diagnosis should
+    // not quietly change the settings someone chose.
+    const found = await performSearch(
+      query,
+      currentConversation.id,
+      recent
+        ? { engines: SEARCH_SCOPES.find((scope) => scope.id === 'recent')?.engines, forceFresh: true }
+        : undefined,
+    );
+    const messageId = options?.messageId;
+    if (!messageId) return;
+    setRerunReports((prev) => ({
+      ...prev,
+      [messageId]: { query, results: found, note: recent ? 'recency forced · Recent scope' : undefined },
+    }));
+    // the post says what changed; the trail keeps the same sentence after the post is gone
+    const known = new Set((messages.find((entry) => entry.id === messageId)?.search_results ?? []).map((source) => source.url));
+    const fresh = found.filter((source) => !known.has(source.url)).length;
+    await logActivity(
+      currentConversation.id,
+      'search',
+      `Search only${recent ? ' (recency forced, Recent scope)' : ''}: “${query}” returned ${found.length} source${
+        found.length === 1 ? '' : 's'
+      }, ${fresh} not in that answer — nothing was rewritten`,
+      { query, sources: found.length, new_sources: fresh, message_id: messageId, recency_forced: recent },
+      'completed',
+    );
+  };
+
+  /** The freshness receipt's next move: search the same question for recent pages. */
+  const handleSearchRecent = async (query: string, options?: { messageId?: string }) => {
+    await handleRetrySearch(query, { messageId: options?.messageId, forceRecent: true });
+  };
+
+  /**
+   * Re-run one of the queries the function actually sent.
+   *
+   * Uncompiled on purpose: the point of the control is to run those words again, so letting the
+   * compiler rewrite them a second time would change the query under the person asking.
+   */
+  const handleRunQuery = async (query: string) => {
+    if (!currentConversation) return;
+    await performSearch(query, currentConversation.id, { compileQueries: false });
+  };
+
+  /** Answer again from a search-only run's sources: no engine is queried, only the model. */
+  const handleAnswerWithSources = async (query: string, reused: Source[]) => {
+    await handleSendMessage(query, { reused });
+  };
+
+  /**
+   * The sources this conversation already stored for a question, if any.
+   *
+   * The run that just failed still holds its fused list in memory, page text included; the stored
+   * rows are the fallback, and the only copy that outlives the turn.
+   */
+  const storedSourcesFor = async (question: string): Promise<Source[] | null> => {
+    const conversationId = currentConversation?.id;
+    if (!conversationId) return null;
+    const { data } = await supabase
+      .from('sources')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .eq('original_query', question);
+    return reuseForRetry({
+      question,
+      conversationId,
+      lastQuery: lastSearchQuery,
+      live: searchResults,
+      rows: (data ?? []) as SourceRecord[],
+    });
+  };
+
+  /**
+   * Retry a turn. A failure that already stored its sources is re-answered from those sources, so
+   * the retry costs one generation instead of a whole search; anything else asks the engines again.
+   */
+  const handleRetryTurn = async (query: string, options?: { reuseSources?: boolean; messageId?: string }) => {
+    const reused = options?.reuseSources ? await storedSourcesFor(query) : null;
+    // the new turn records the attempt it replaces, so the two read as attempts at one question
+    await handleSendMessage(query, { reused, retryOf: options?.messageId });
   };
 
   /** Save a message's sources as findings, skipping anything already filed. Returns how many were new. */
@@ -837,7 +1035,13 @@ export default function App() {
               useDorks={useDorks}
               onUseDorksChange={setUseDorks}
               onRetrySearch={handleRetrySearch}
-              onRetryTurn={handleSendMessage}
+              onSearchRecent={handleSearchRecent}
+              // the citation selected in the Sources panel lights the newest answer's sentences
+              focusedCitation={citationFocus}
+              onCitationFocus={setCitationFocus}
+              reruns={rerunReports}
+              onAnswerWithSources={handleAnswerWithSources}
+              onRetryTurn={handleRetryTurn}
               onSaveResults={handleSaveResults}
               onFollowUp={handleSendMessage}
               modelNotice={modelNotice}
@@ -851,6 +1055,14 @@ export default function App() {
               // which panel rows the model actually read, taken from the saved answers: the panel's
               // own source rows predate the prompt and cannot know
               promptCoverage={promptCoverage(messages)}
+              // the last run weighted dates regardless of intent, so a card must not say it ignored them
+              forcedRecency={forcedRecency}
+              // a rewritten question is shown with the words that were really sent, and each is runnable
+              queriesUsed={queriesUsed}
+              onRunQuery={handleRunQuery}
+              // one id, both directions: a card press lights the answer, and vice versa
+              focusedCitation={citationFocus}
+              onFocusCitation={setCitationFocus}
               isSearching={isSearching}
               findings={findings}
               onUpdateFindingStatus={handleUpdateFindingStatus}
@@ -861,7 +1073,7 @@ export default function App() {
               gaps={
                 // an empty Sources panel names the same gaps the answer's gap report lists, so a
                 // dead search never leaves a page with nothing on it
-                lastSearchQuery && emptyResultBlock
+                lastSearchQuery
                   ? buildGapReport({ query: lastSearchQuery, engines, issues: engineIssues, laneYield }).gaps
                   : []
               }

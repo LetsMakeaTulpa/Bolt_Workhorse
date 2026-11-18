@@ -1,9 +1,10 @@
-import { Source, Finding, ActivityLog, SourceRecord } from '../types';
+import { Source, Finding, ActivityLog, SourceRecord, type PromptCoverage } from '../types';
 import { queryIntent } from '../lib/fusion';
 import { describeIntent, rankSources } from '../lib/rankExplain';
+import { coverageCount, coverageSentence, matchesCoverageFilter, summarizeCoverage, type CoverageFilter } from '../lib/sourceCoverage';
 import { SourceCard, type CardSource } from './SourceCard';
 import { NoSourcesCard } from './NoSourcesCard';
-import { Search, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar } from 'lucide-react';
+import { Search, Bookmark, Share2, Trash2, Loader2, Globe, Activity, FileText, Shield, ChevronRight, PanelRightClose, Radar, RotateCw } from 'lucide-react';
 import { SearchMap } from './SearchMap';
 import type { LucideIcon } from 'lucide-react';
 import { useState } from 'react';
@@ -14,7 +15,16 @@ interface InvestigationPanelProps {
    * url → whether the prompt carried it, recorded on the saved answers. The panel's own rows are
    * written before the prompt exists, so without this every result looks equally model-visible.
    */
-  promptCoverage?: Map<string, boolean>;
+  promptCoverage?: Map<string, PromptCoverage>;
+  /** the last run forced the freshness multiplier on, so a badge must not claim dates were ignored */
+  forcedRecency?: boolean;
+  /** the queries the function actually ran: a rewritten question is shown, not hidden */
+  queriesUsed?: string[];
+  /** run one of those queries again, exactly as it was written */
+  onRunQuery?: (query: string) => void;
+  /** the citation selected here or in the answer, shared by both so one press lights both */
+  focusedCitation?: string | null;
+  onFocusCitation?: (id: string | null) => void;
   isSearching: boolean;
   findings: Finding[];
   onUpdateFindingStatus: (id: string, status: 'saved' | 'shared' | 'discarded') => void;
@@ -35,6 +45,11 @@ export type PanelTab = 'map' | 'activity' | 'sources' | 'evidence';
 export function InvestigationPanel({
   searchResults,
   promptCoverage,
+  forcedRecency,
+  queriesUsed,
+  onRunQuery,
+  focusedCitation,
+  onFocusCitation,
   isSearching,
   findings,
   onUpdateFindingStatus,
@@ -82,6 +97,11 @@ export function InvestigationPanel({
             query={query}
             gaps={gaps}
             promptCoverage={promptCoverage}
+            forcedRecency={forcedRecency}
+            queriesUsed={queriesUsed}
+            onRunQuery={onRunQuery}
+            focusedCitation={focusedCitation}
+            onFocusCitation={onFocusCitation}
             onRetrySearch={onRetrySearch}
           />
         )}
@@ -162,18 +182,36 @@ function SourcesTab({
   query,
   gaps,
   promptCoverage,
+  forcedRecency,
+  queriesUsed = [],
+  onRunQuery,
+  focusedCitation,
+  onFocusCitation,
   onRetrySearch,
 }: {
   results: Source[];
   sources: SourceRecord[];
   isSearching: boolean;
   query?: string;
-  /** url → whether the prompt carried it; absent when no saved answer recorded a verdict */
-  promptCoverage?: Map<string, boolean>;
+  /** url → whether the prompt carried it and why; absent when no saved answer recorded a verdict */
+  promptCoverage?: Map<string, PromptCoverage>;
+  /** the run behind these rows weighted dates regardless of the query's intent */
+  forcedRecency?: boolean;
+  /** what the function really searched for; empty when the run did not report it */
+  queriesUsed?: string[];
+  /** run one of those queries again, uncompiled */
+  onRunQuery?: (query: string) => void;
+  /** the citation selected in the answer, so its card can show the same state */
+  focusedCitation?: string | null;
+  /** select a citation from a card, lighting the sentences in the answer that cite it */
+  onFocusCitation?: (id: string | null) => void;
   /** the gap lines the empty run recorded, so an empty page still explains itself */
   gaps?: string[];
   onRetrySearch?: (query: string) => void;
 }) {
+  // declared before the early returns: the tab can go from searching to listing between renders
+  const [coverageFilter, setCoverageFilter] = useState<CoverageFilter>('all');
+
   if (isSearching) {
     return (
       <div className="flex flex-col items-center justify-center py-10">
@@ -194,14 +232,14 @@ function SourcesTab({
         published: s.publication_date || undefined,
         query: s.original_query || query,
         // a stored row cannot carry this itself: it is saved before the prompt is built
-        in_prompt: promptCoverage?.get(s.url),
+        prompt: promptCoverage?.get(s.url),
       }))
     : results.map((r) => ({
         ...r,
         citation_id: r.citation_id ?? '',
         relevance_score: r.relevance_score ?? 0,
         query,
-        in_prompt: r.in_prompt ?? promptCoverage?.get(r.url),
+        prompt: promptCoverage?.get(r.url),
       }));
 
   if (displaySources.length === 0) {
@@ -212,11 +250,92 @@ function SourcesTab({
   // One order instead of a section per provider: a rank is only worth showing if it matches where
   // the row sits, and grouping by engine would put a lower-scored source above a higher one.
   const ranked = rankSources(displaySources);
+  const coverage = summarizeCoverage(displaySources);
+  // a filter whose bucket emptied (a new run, a reloaded answer) falls back rather than hiding the list
+  const activeFilter: CoverageFilter = coverageFilter === 'all' || coverageCount(coverage, coverageFilter) > 0 ? coverageFilter : 'all';
+  const visible = ranked.filter((source) => matchesCoverageFilter(source, activeFilter));
+  const filters = (
+    [
+      { value: 'all', label: 'All' },
+      { value: 'reached', label: 'In prompt' },
+      { value: 'left-out', label: 'Left out' },
+      { value: 'unrecorded', label: 'Unrecorded' },
+    ] as const
+  ).filter(({ value }) => value === 'all' || coverageCount(coverage, value) > 0);
 
   const intent = describeIntent(queryIntent(query || displaySources[0]?.query || ''));
 
   return (
     <div className="space-y-3">
+      {/* The rows each carry a chip, but the tab's real question is what the answer had in front of
+          it. One sentence answers that for the whole list, and the filter lets the reader see only
+          what did or did not get through. */}
+      <div className="rounded-lg border border-border-subtle bg-bg-surface p-2.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Prompt coverage</span>
+          <span className="font-mono text-[10px] text-text-muted">
+            {coverage.reached}/{coverage.total}
+          </span>
+        </div>
+        <p className="mt-1 text-[10px] leading-tight text-text-secondary">{coverageSentence(coverage)}</p>
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {filters.map(({ value, label }) => {
+            const active = activeFilter === value;
+            const count = coverageCount(coverage, value);
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setCoverageFilter(value)}
+                aria-pressed={active}
+                title={`Show ${count} ${count === 1 ? 'row' : 'rows'}: ${label.toLowerCase()}`}
+                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                  active
+                    ? 'border-accent/40 bg-accent/15 text-text-primary'
+                    : 'border-border-subtle bg-bg-elevated text-text-secondary hover:border-accent/30 hover:text-text-primary'
+                }`}
+              >
+                {label}
+                <span className="font-mono text-text-muted">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        {coverage.withheld > 0 && (
+          <p className="mt-1 text-[9px] leading-tight text-text-muted">
+            Only what the prompt carried can support the answer; the rows left out are listed for you, not for the model.
+          </p>
+        )}
+      </div>
+      {/* A rewritten question looks like odd results unless the words that were actually sent are
+          shown. Each chip re-runs its query exactly as written, without the compiler touching it. */}
+      {queriesUsed.length > 0 && (
+        <div className="rounded-lg border border-border-subtle bg-bg-surface p-2.5">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Queries sent</span>
+            <span className="font-mono text-[10px] text-text-muted">{queriesUsed.length}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {queriesUsed.map((expanded) => (
+              <button
+                key={expanded}
+                type="button"
+                onClick={() => onRunQuery?.(expanded)}
+                disabled={!onRunQuery}
+                title={`Search “${expanded}” again, exactly as it was sent — no rewriting`}
+                className="flex max-w-full items-center gap-1 rounded-full border border-border-subtle bg-bg-elevated px-2 py-0.5 text-[10px] text-text-secondary transition-colors hover:border-accent/30 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <span className="truncate">{expanded}</span>
+                <RotateCw size={8} className="flex-shrink-0" />
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[9px] leading-tight text-text-muted">
+            The queries the search function ran. When they differ from what you typed, the question was rewritten
+            before any engine saw it.
+          </p>
+        </div>
+      )}
       <div className="rounded-lg border border-border-subtle bg-bg-surface px-2.5 py-1.5">
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Ranking</span>
@@ -226,8 +345,15 @@ function SourcesTab({
       </div>
       <EngineSummary results={displaySources} />
       <div className="space-y-1.5">
-        {ranked.map((source) => (
-          <SourceCard key={`${source.rank}-${source.url}`} source={source} rank={source.rank} />
+        {visible.map((source) => (
+          <SourceCard
+            key={`${source.rank}-${source.url}`}
+            source={source}
+            rank={source.rank}
+            forcedRecency={forcedRecency}
+            focusedCitation={focusedCitation}
+            onFocusCitation={onFocusCitation}
+          />
         ))}
       </div>
     </div>
@@ -362,7 +488,11 @@ function FindingCard({
           {finding.url}
         </a>
         <div className="flex items-center gap-0.5 flex-shrink-0">
-          <button onClick={handleRetry} className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-olive transition-colors" title="Retry search">
+          <button
+            onClick={handleRetry}
+            className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-olive transition-colors"
+            title="Search only — run this finding's query again; no answer is written"
+          >
             <Search size={11} />
           </button>
           <button onClick={handleShare} className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-accent transition-colors" title="Share">

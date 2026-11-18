@@ -9,7 +9,8 @@
  * so the transcript can say so without another request, and offer each query as a button the reader
  * can press to run it themselves.
  */
-import type { Source } from '../types';
+import type { PromptCoverage, Source } from '../types';
+import { pageTextForPrompt, PROMPT_CONTENT_CHARS } from './sourceContext';
 
 export interface ReadSource {
   /** the citation id the answer uses for this source */
@@ -18,6 +19,12 @@ export interface ReadSource {
   url: string;
   /** which extractor read it: a plain fetch, or a Firecrawl render */
   via: string;
+  /** the page text exactly as this turn's prompt carried it, cap and all */
+  text: string;
+  /** characters of page text the prompt carried — the length the model actually read */
+  given: number;
+  /** characters the stored row holds for this page, which may be more than was given */
+  stored: number;
 }
 
 export interface MachineTrace {
@@ -25,6 +32,8 @@ export interface MachineTrace {
   read: ReadSource[];
   /** queries the model ran itself, oldest first, deduplicated */
   extraSearches: string[];
+  /** query → what that search brought in, for the turns that recorded it */
+  searchYields: Record<string, { found: number; added: number }>;
   /** how many fused sources the prompt carried; null when the row predates the mark */
   given: number | null;
   /** how many fused sources the answer has in total — the panel lists all of them */
@@ -37,17 +46,31 @@ export interface MachineTrace {
 
 const asText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
-/** Sources whose page text was actually extracted, in rank order. */
-export function readInFull(results: Source[] = []): ReadSource[] {
+/**
+ * Sources whose page text was actually extracted, in rank order, with the text the prompt carried.
+ *
+ * The cap is the one the prompt applies, read back from the row when the turn recorded it and
+ * otherwise the prompt's standard budget: showing more than the model read would let a figure the
+ * model never saw look supported, which is the one thing this strip exists to prevent.
+ */
+export function readInFull(results: Source[] = [], defaultChars: number = PROMPT_CONTENT_CHARS): ReadSource[] {
   return results
     .map((source, index) => ({ source, citation: asText(source.citation_id) || `[${index + 1}]` }))
     .filter(({ source }) => asText(source.content).length > 0)
-    .map(({ source, citation }) => ({
-      citation,
-      title: asText(source.title) || asText(source.url),
-      url: asText(source.url),
-      via: asText(source.content_source) || 'fetch',
-    }));
+    .map(({ source, citation }) => {
+      const cap =
+        typeof source.prompt_chars === 'number' && source.prompt_chars > 0 ? source.prompt_chars : defaultChars;
+      const text = pageTextForPrompt(source, cap);
+      return {
+        citation,
+        title: asText(source.title) || asText(source.url),
+        url: asText(source.url),
+        via: asText(source.content_source) || 'fetch',
+        text,
+        given: text.length,
+        stored: asText(source.content).length,
+      };
+    });
 }
 
 /**
@@ -99,31 +122,62 @@ export function usedSources(message: { search_results?: Source[] | null }): Sour
 }
 
 /**
- * url → whether the prompt carried that source, from the rows that recorded a verdict.
+ * url → whether the prompt carried that source and why, from the rows that recorded a verdict.
  *
  * The Sources panel lists rows saved by the search, which runs before the prompt is built and so
  * cannot know what the prompt carried. The verdict lives on the answer saved afterwards, which is
  * why the panel reads it from the messages. The newest turn wins: the panel is showing the latest
- * answer's evidence. A url no row marked is absent — unknown, not "never shown".
+ * answer's evidence. A url no row marked is absent — unknown, not "never shown". A row that has only
+ * the boolean keeps its verdict with no reason: the cause was never recorded, so none is invented.
  */
-export function promptCoverage(messages: { search_results?: Source[] | null }[]): Map<string, boolean> {
-  const coverage = new Map<string, boolean>();
+export function promptCoverage(messages: { search_results?: Source[] | null }[]): Map<string, PromptCoverage> {
+  const coverage = new Map<string, PromptCoverage>();
   for (const message of messages) {
     for (const source of message.search_results ?? []) {
-      if (typeof source.in_prompt === 'boolean' && source.url) coverage.set(source.url, source.in_prompt);
+      if (!source.url) continue;
+      if (source.prompt_reason) {
+        const reason = source.prompt_reason;
+        coverage.set(source.url, { inPrompt: reason === 'given' || reason === 'trimmed', reason });
+      } else if (typeof source.in_prompt === 'boolean') {
+        coverage.set(source.url, { inPrompt: source.in_prompt, reason: null });
+      }
     }
   }
   return coverage;
 }
 
 /** Everything the transcript strip draws, from the stored message alone. */
+/**
+ * What each extra search added, keyed by its query.
+ *
+ * A repeated query keeps its newest record: the strip shows the most recent run's yield, which is
+ * the one the chip would re-run. Rows written before the yields were recorded yield nothing, and
+ * the chip then says only what it always said rather than inventing a count.
+ */
+export function parseSearchYields(value: unknown): Record<string, { found: number; added: number }> {
+  const yields: Record<string, { found: number; added: number }> = {};
+  if (!Array.isArray(value)) return yields;
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as { query?: unknown; found?: unknown; added?: unknown };
+    const query = asText(record.query);
+    const found = Number(record.found);
+    const added = Number(record.added);
+    if (!query || !Number.isFinite(found) || !Number.isFinite(added)) continue;
+    yields[query] = { found, added };
+  }
+  return yields;
+}
+
 export function summarizeMachine(message: {
   search_results?: Source[] | null;
   tool_searches?: unknown;
+  tool_search_yields?: unknown;
 }): MachineTrace {
   const results = message.search_results ?? [];
   const read = readInFull(results);
   const extraSearches = parseToolSearches(message.tool_searches);
+  const searchYields = parseSearchYields(message.tool_search_yields);
   // a row written before the mark carries no verdict: unknown, not "never shown"
   const marked = results.filter((source) => typeof source.in_prompt === 'boolean');
   const given = marked.length === 0 ? null : marked.filter((source) => source.in_prompt).length;
@@ -132,6 +186,7 @@ export function summarizeMachine(message: {
   return {
     read,
     extraSearches,
+    searchYields,
     given,
     shown,
     panelOnly,

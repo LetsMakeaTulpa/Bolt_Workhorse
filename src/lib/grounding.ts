@@ -14,8 +14,14 @@
  * marks the sentence and names what it could not find, so a reader can check the page themselves.
  * A source that came back with only a snippet makes its sentences *unchecked*, not wrong: the figure
  * may be three lines below where the snippet stopped.
+ *
+ * It audits the prompt, not the panel. A fusion run keeps every source it found but hands the model
+ * only the ones the prompt carried, and only the first `prompt_chars` of each page — so a figure
+ * that appears in a panel-only row, or past the cut, is something the model cannot have read. Passing
+ * it would be the audit vouching for text no one saw, which is the failure it exists to prevent.
  */
-import type { Source } from '../types';
+import type { PromptReason, Source } from '../types';
+import { PROMPT_CONTENT_CHARS, pageTextForPrompt } from './sourceContext';
 
 export type GroundingStatus =
   /** every figure and name in the sentence appears in a cited source's page text */
@@ -24,6 +30,8 @@ export type GroundingStatus =
   | 'unknown-citation'
   /** the sentence cites sources that have no extracted text, so nothing could be checked */
   | 'no-page-text'
+  /** the sentence cites a source the panel holds but the prompt never carried */
+  | 'unread-citation'
   /** figures or names that are in no cited page, or figures with no citation at all */
   | 'unsupported'
   /** nothing to check: no citation, no figure, no name */
@@ -41,6 +49,8 @@ export interface GroundingReport {
   sentences: SentenceGrounding[];
   /** citation IDs used by the answer that no source provides, without brackets */
   unknownCitations: string[];
+  /** citation IDs the panel holds but the prompt did not carry, without brackets */
+  unreadCitations: string[];
   /** sentences that assert something we could not find — the ones to mark */
   flagged: SentenceGrounding[];
   /** sentences that cite snippet-only sources, so they could not be checked either way */
@@ -53,8 +63,11 @@ export interface GroundingReport {
   summary: string;
 }
 
-/** A cited source, narrowed to what the check reads. */
-type CitedSource = Pick<Source, 'citation_id' | 'title' | 'url' | 'snippet' | 'content'>;
+/** A cited source, narrowed to what the check reads — including how much of it the prompt carried. */
+type CitedSource = Pick<
+  Source,
+  'citation_id' | 'title' | 'url' | 'snippet' | 'content' | 'in_prompt' | 'prompt_chars' | 'prompt_reason'
+>;
 
 const ID = /\[(\d{1,3})\]/g;
 
@@ -191,13 +204,23 @@ function figurePresent(figure: string, haystack: string): boolean {
 
 const namePresent = (name: string, haystack: string): boolean => haystack.includes(normalize(name));
 
+/** The page text the prompt actually carried: capped at what that source was given. */
+const givenText = (source: CitedSource): string =>
+  normalize(pageTextForPrompt(source, source.prompt_chars ?? PROMPT_CONTENT_CHARS));
+
 function pageTextOf(sources: CitedSource[]): string {
-  return sources.map((source) => normalize(source.content ?? '')).filter(Boolean).join(' ');
+  return sources.map(givenText).filter(Boolean).join(' ');
 }
 
 function hasPageText(source: CitedSource): boolean {
-  return normalize(source.content ?? '').length > 0;
+  return givenText(source).length > 0;
 }
+
+/** Whether this row was in the prompt this answer's turn recorded. */
+const wasGiven = (source: CitedSource): boolean =>
+  source.prompt_reason
+    ? source.prompt_reason === 'given' || source.prompt_reason === 'trimmed'
+    : source.in_prompt === true;
 
 /**
  * Check one answer against the sources stored with it.
@@ -205,13 +228,24 @@ function hasPageText(source: CitedSource): boolean {
  * `question` is optional and only used to exempt names the user themselves supplied.
  */
 export function checkGrounding(answer: string, sources: CitedSource[], question = ''): GroundingReport {
+  // A saved turn marks which of its sources the prompt carried. A row with no marks at all predates
+  // the record, so its stored sources are the only reading available — and the only one that does not
+  // invent an omission.
+  const marked = sources.some((source) => typeof source.in_prompt === 'boolean' || source.prompt_reason !== undefined);
+  const idOf = (source: CitedSource, index: number) =>
+    String(source.citation_id ?? `[${index + 1}]`).replace(/[[\]]/g, '').trim();
+
   const byId = new Map<string, CitedSource>();
+  const withheld = new Map<string, CitedSource>();
   sources.forEach((source, index) => {
-    const id = String(source.citation_id ?? `[${index + 1}]`).replace(/[[\]]/g, '').trim();
-    if (id) byId.set(id, source);
+    const id = idOf(source, index);
+    if (!id) return;
+    if (!marked || wasGiven(source)) byId.set(id, source);
+    else withheld.set(id, source);
   });
 
   const unknown = new Set<string>();
+  const unread = new Set<string>();
   const sentences: SentenceGrounding[] = [];
 
   for (const text of splitSentences(answer)) {
@@ -232,11 +266,19 @@ export function checkGrounding(answer: string, sources: CitedSource[], question 
     }
 
     const cited = ids.map((id) => byId.get(id)).filter((source): source is CitedSource => Boolean(source));
-    const missingIds = ids.filter((id) => !byId.has(id));
+    // a source that is in the panel but not in the prompt is not invented, and it is not evidence
+    const missingIds = ids.filter((id) => !byId.has(id) && !withheld.has(id));
+    const unreadIds = ids.filter((id) => withheld.has(id));
     missingIds.forEach((id) => unknown.add(id));
+    unreadIds.forEach((id) => unread.add(id));
 
     if (missingIds.length > 0) {
       sentences.push({ text, citations: ids, status: 'unknown-citation', missing: missingIds.map((id) => `[${id}]`) });
+      continue;
+    }
+
+    if (cited.length === 0) {
+      sentences.push({ text, citations: ids, status: 'unread-citation', missing: unreadIds.map((id) => `[${id}]`) });
       continue;
     }
 
@@ -259,7 +301,10 @@ export function checkGrounding(answer: string, sources: CitedSource[], question 
     sentences.push({ text, citations: ids, status: missing.length > 0 ? 'unsupported' : 'grounded', missing });
   }
 
-  const flagged = sentences.filter((sentence) => sentence.status === 'unsupported' || sentence.status === 'unknown-citation');
+  const flagged = sentences.filter(
+    (sentence) =>
+      sentence.status === 'unsupported' || sentence.status === 'unknown-citation' || sentence.status === 'unread-citation',
+  );
   const unchecked = sentences.filter((sentence) => sentence.status === 'no-page-text');
   const grounded = sentences.filter((sentence) => sentence.status === 'grounded').length;
   const checked = sentences.filter((sentence) => sentence.status !== 'unchecked').length;
@@ -267,11 +312,12 @@ export function checkGrounding(answer: string, sources: CitedSource[], question 
   return {
     sentences,
     unknownCitations: [...unknown],
+    unreadCitations: [...unread],
     flagged,
     unchecked,
     grounded,
     checked,
-    summary: summarize({ flagged, unchecked, grounded, checked, unknown: [...unknown] }),
+    summary: summarize({ flagged, unchecked, grounded, checked, unknown: [...unknown], unread: [...unread] }),
   };
 }
 
@@ -281,17 +327,26 @@ function summarize({
   grounded,
   checked,
   unknown,
+  unread,
 }: {
   flagged: SentenceGrounding[];
   unchecked: SentenceGrounding[];
   grounded: number;
   checked: number;
   unknown: string[];
+  unread: string[];
 }): string {
   if (checked === 0) return '';
   const parts: string[] = [];
   if (unknown.length > 0) {
     parts.push(`${unknown.length} citation${unknown.length === 1 ? '' : 's'} that no source provides (${unknown.map((id) => `[${id}]`).join(', ')})`);
+  }
+  if (unread.length > 0) {
+    parts.push(
+      `${unread.length} citation${unread.length === 1 ? '' : 's'} to sources the prompt did not carry (${unread
+        .map((id) => `[${id}]`)
+        .join(', ')})`,
+    );
   }
   const unsupported = flagged.filter((sentence) => sentence.status === 'unsupported').length;
   if (unsupported > 0) {

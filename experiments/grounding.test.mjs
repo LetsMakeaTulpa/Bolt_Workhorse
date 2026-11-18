@@ -147,6 +147,72 @@ const page = (citation, text) => ({ citation_id: citation, title: `Source ${cita
   check('an answer with nothing checkable shows no strip at all', !quietHtml.includes('Grounding:'));
 }
 
+// ── 8. the audit reads the prompt, not the panel ─────────────────────────
+{
+  const given = (citation, text, extra = {}) => ({
+    ...page(citation, text),
+    in_prompt: true,
+    prompt_chars: 4000,
+    ...extra,
+  });
+  const sources = [
+    given('[1]', 'The benchmark reports an nDCG of 0.42 on the test split.'),
+    { ...page('[2]', 'Recall reached 0.91 in a later run.'), in_prompt: false, prompt_reason: 'capped' },
+  ];
+  const report = checkGrounding('nDCG was 0.42 [1]. Recall was 0.91 [2].', sources);
+  const find = (fragment) => report.sentences.find((s) => s.text.includes(fragment));
+
+  check('a panel-only source cannot vouch for a figure', find('Recall was 0.91')?.status === 'unread-citation', find('Recall was 0.91')?.status);
+  check(
+    'its id is unread, not invented',
+    report.unreadCitations.join() === '2' && report.unknownCitations.length === 0,
+    JSON.stringify([report.unreadCitations, report.unknownCitations]),
+  );
+  check('the sentence is flagged and names the id', report.flagged[0]?.missing.join() === '[2]', JSON.stringify(report.flagged[0]?.missing));
+  check('the summary says the prompt did not carry it', /prompt did not carry/.test(report.summary), report.summary);
+  check('the source the prompt did carry still grounds its sentence', find('nDCG was 0.42')?.status === 'grounded');
+
+  // the cap is the one the prompt applied, so text past it is not evidence either
+  const long = given('[1]', `0.42 opens the page. ${'filler '.repeat(20)}0.91 appears far past the cap.`, { prompt_chars: 40 });
+  const clipped = checkGrounding('Recall was 0.91 [1]. The score was 0.42 [1].', [long]);
+  const clippedFind = (fragment) => clipped.sentences.find((s) => s.text.includes(fragment));
+  check('text past prompt_chars cannot ground a figure', clippedFind('Recall was 0.91')?.status === 'unsupported', clippedFind('Recall was 0.91')?.status);
+  check('text inside the cap still can', clippedFind('The score was 0.42')?.status === 'grounded');
+
+  // a source the prompt trimmed was still read, just not to the end
+  const trimmed = given('[1]', 'The score was 0.42.', { prompt_reason: 'trimmed' });
+  check('a trimmed source is still evidence', checkGrounding('The score was 0.42 [1].', [trimmed]).grounded === 1);
+
+  // a sentence that cites a given source and a withheld one is checked against the given one
+  const mixed = checkGrounding('Recall was 0.91 [1][2].', sources);
+  check('a withheld id riding along does not hide the check', mixed.sentences[0]?.status === 'unsupported', mixed.sentences[0]?.status);
+
+  // rows written before the record carry no marks; their stored sources are the only reading left
+  const legacy = checkGrounding('Recall was 0.91 [2].', [page('[1]', 'nothing'), page('[2]', 'Recall reached 0.91.')]);
+  check('an unmarked row is audited against what it stored', legacy.grounded === 1, legacy.summary);
+
+  const React = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { MessageBubble } = await import(asUrl(BUBBLE));
+  const html = renderToStaticMarkup(
+    React.createElement(MessageBubble, {
+      message: {
+        id: 'm1',
+        conversation_id: 'c1',
+        role: 'assistant',
+        content: 'Recall was 0.91 [2].',
+        model: 'Qwen/Qwen2.5-7B-Instruct',
+        search_enabled: true,
+        search_results: sources,
+        created_at: new Date().toISOString(),
+      },
+      isStreaming: false,
+      query: 'what was the recall',
+    }),
+  );
+  check('the bubble names an unread citation', html.includes('prompt did not carry'), html.match(/Grounding:[^<]*/)?.[0]);
+}
+
 const failed = results.filter((row) => !row.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);
 if (failed.length) process.exit(1);

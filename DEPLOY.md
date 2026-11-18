@@ -1,7 +1,7 @@
 # Deploy runbook
 
 This is the one-time (then repeatable) procedure for bringing a deployment up to the code in this
-repository. It exists because the hosted project is **behind the repo**: three migrations have
+repository. It exists because the hosted project is **behind the repo**: eleven migrations have
 never been applied and both edge functions still run code from before `engine_status`, per-user
 keys, rate limiting and the rejected-key fallback.
 
@@ -26,13 +26,37 @@ Project ref: **`mhfsggpnnjyxsnshqatf`** (hardcoded in `scripts/import-keys.mjs`;
 
 | Item | Repo state | Hosted state |
 | --- | --- | --- |
-| `20261115140000_add_user_auth_rls.sql` | present | **not applied** |
+| `20261115140000_add_user_auth_rls.sql` | present | **not applied** — every private table is still world-readable with the public anon key |
 | `20261115150000_add_request_rate_limits.sql` | present | **not applied** |
 | `20261115160000_user_engine_keys.sql` | present | **not applied** |
 | `20261116170000_add_message_system_prompt.sql` | present | **not applied** (answers save without it, see below) |
 | `20261117120000_add_message_tool_searches.sql` | present | **not applied** (the model's own queries are session-only until it runs) |
+| `20261117140000_add_message_gaps.sql` | present | **not applied** (an unsourced answer's gaps are transcript-only until it runs) |
+| `20261118120000_add_message_retry_of.sql` | present | **not applied** (a retry cannot link to the attempt it replaced) |
+| `20261118140000_add_message_tool_search_yields.sql` | present | **not applied** (every extra search reads as "nothing new") |
+| `20261118160000_add_message_queries_used.sql` | present | **not applied** (the words that produced the sources are session-only) |
+| `20261118180000_add_message_usefulness.sql` | present | **not applied** (a usefulness press is dropped, and reported as dropped) |
+| `20261118190000_create_search_runs.sql` | present | **not applied** (per-lane lists are not recorded, so runs cannot be compared) |
 | `llm-proxy` | rate limiting, session-scoped keys | **stale** |
 | `web-search` | `engine_status`, per-user keys, `key_fallback`, the `GET` configuration probe, rate limit, reported compiler | **stale** |
+
+Measured against the hosted project on 2026-11-18, with the anon key only (no token):
+
+- `npm run migrations:check` reports all eleven objects **MISSING**, the first being
+  `messages.user_id`.
+- `GET /functions/v1/web-search` returns **500** `{"error":"Unexpected end of JSON input"}` — the
+  deployed function tries to parse a body that a GET does not have, so it predates the probe.
+- `POST /functions/v1/web-search` returns 200 with keys
+  `query,queries_used,engines_used,total_results,preset,results`: **no `engine_status`**, which
+  means an empty result cannot say whether it was a missing key or a quiet query, and **no
+  `compilation`**, so the trail cannot name the compiler.
+- Six invalid-body `POST`s to `/functions/v1/llm-proxy/chat` return `400` six times: no 429, no
+  `X-RateLimit-*`. The counter the current code spends before forwarding is not deployed, and
+  `consume_rate_limit` does not exist in the hosted database either.
+
+What each gap costs the running app, in the order it will be felt: retries reload without their
+link, an extra search never says it added nothing, a usefulness press is refused, and both public
+functions still answer unlimited calls from anyone holding the anon key.
 
 Do not trust the table — the authoritative answer is the CLI:
 
@@ -116,15 +140,24 @@ finishes by re-probing the hosted schema. The old direct commands still work if 
 Until `…16170000` runs, the app saves assistant rows **without** `system_prompt`: the answer
 survives, the recorded prompt does not, and the activity trail says so once per session.
 
-`db push` runs each file in filename order. Each file opens with `BEGIN` and ends with `COMMIT`, so
-a failure rolls that migration back rather than leaving it half-applied — which is also why a
-migration must never be edited after it has run anywhere.
+`db push` runs each file in filename order. The `20261115…` files open with `BEGIN` and end with
+`COMMIT`, so a failure rolls that migration back rather than leaving it half-applied. The later
+`messages`/`search_runs` migrations are one additive change each, which is atomic on its own; the
+exception is `…18190000`, which creates the table, indexes, privileges and policy in one file — it
+is written so every statement is `if not exists` or preceded by a `drop`, so a retry after a partial
+failure is safe. That is also why a migration must never be edited after it has run anywhere.
 
 Verify — as the service role, in the SQL editor:
 
 ```sql
 -- 1. auth/RLS
 select tablename, rowsecurity from pg_tables where schemaname = 'public' order by 1;
+
+-- every message column the later migrations add: expects 7 rows
+select column_name from information_schema.columns
+ where table_schema = 'public' and table_name = 'messages'
+   and column_name in ('system_prompt','tool_searches','gaps','retry_of','tool_search_yields','queries_used','useful')
+ order by 1;
 
 -- 2. rate limiting
 select proname from pg_proc where proname = 'consume_rate_limit';
@@ -137,7 +170,10 @@ select column_default from information_schema.columns
 ```
 
 Expected: `user_engine_keys` exists with owner-only policies and **no** `anon` grant;
-`consume_rate_limit()` exists; `request_rate_limits` exists with RLS on and no policies.
+`consume_rate_limit()` exists; `request_rate_limits` exists with RLS on and no policies;
+`search_runs` exists with `own_search_runs`; and `messages` has all seven columns above. A missing
+column is not fatal — the app writes around it and names it in the activity trail — but it is the
+column that turns that feature off.
 
 ### Adopt pre-RLS rows (only on the first ever run of `…140000`)
 
@@ -160,6 +196,12 @@ supabase secrets set --env-file .env.functions --project-ref mhfsggpnnjyxsnshqat
 `.env.functions` is written by `npm run keys:import` and is gitignored. Secrets take effect for
 already-deployed functions without a redeploy; the redeploy in step 5 is for the code, not the
 keys. The Featherless key is **not** a secret here — it lives in `app_config` (see README).
+
+As of 2026-11-18 the local `.env.functions` holds values for **EXA_API_KEY**, **TAVILY_API_KEY**
+and **FIRECRAWL_API_KEY**, and nothing for the other names in `KNOWN_SECRETS`. Compare that with
+`supabase secrets list` (names only) and set only what is genuinely missing: an engine with no key
+still answers `missing_key` in `engine_status` rather than failing, so the deployment is not broken
+by a short list. `SEARCH_COMPILER_MODEL` is optional — unset, the function uses its pinned default.
 
 ---
 
@@ -323,7 +365,8 @@ belong to a different project than the one just deployed.
 ```text
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
-[ ] npm run smoke green (43 checks, 0 failed, no skips)
+[ ] npm run smoke green (47 checks, 0 failed, no skips)
+[ ] npm run migrations:check shows every object present (it needs no token)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

@@ -31,6 +31,7 @@ const TABLES = [
   'research_presets',
   'research_projects',
   'request_rate_limits',
+  'search_runs',
   'search_settings',
   'sources',
   'user_engine_keys',
@@ -44,6 +45,13 @@ const COLUMNS = [
   ['messages', 'conversation_id'],
   ['messages', 'system_prompt'],
   ['messages', 'tool_searches'],
+  ['messages', 'gaps'],
+  ['messages', 'retry_of'],
+  ['messages', 'tool_search_yields'],
+  ['messages', 'queries_used'],
+  ['messages', 'useful'],
+  ['search_runs', 'lanes'],
+  ['search_runs', 'lanes_hash'],
   ['sources', 'user_id'],
   ['findings', 'user_id'],
   ['activity_logs', 'user_id'],
@@ -66,6 +74,7 @@ const POLICIES = [
   ['app_config', 'service_role_all_config'],
   ['research_presets', 'shared_presets_read'],
   ['search_settings', 'shared_settings_read'],
+  ['search_runs', 'own_search_runs'],
   ['user_engine_keys', 'user_engine_keys_select_own'],
   ['user_engine_keys', 'user_engine_keys_insert_own'],
   ['user_engine_keys', 'user_engine_keys_update_own'],
@@ -91,6 +100,8 @@ const INDEXES = [
   'idx_sources_conversation_id',
   'idx_sources_message_id',
   'idx_sources_user',
+  'idx_search_runs_conversation',
+  'idx_search_runs_hash',
 ];
 
 /** table privileges: [role, table, privilege, shouldHaveIt] */

@@ -83,6 +83,12 @@ const PENDING = [
   { migration: '20261115160000_user_engine_keys.sql', label: 'user_engine_keys', table: 'user_engine_keys' },
   { migration: '20261116170000_add_message_system_prompt.sql', label: 'messages.system_prompt', table: 'messages', column: 'system_prompt' },
   { migration: '20261117120000_add_message_tool_searches.sql', label: 'messages.tool_searches', table: 'messages', column: 'tool_searches' },
+  { migration: '20261117140000_add_message_gaps.sql', label: 'messages.gaps', table: 'messages', column: 'gaps' },
+  { migration: '20261118120000_add_message_retry_of.sql', label: 'messages.retry_of', table: 'messages', column: 'retry_of' },
+  { migration: '20261118140000_add_message_tool_search_yields.sql', label: 'messages.tool_search_yields', table: 'messages', column: 'tool_search_yields' },
+  { migration: '20261118160000_add_message_queries_used.sql', label: 'messages.queries_used', table: 'messages', column: 'queries_used' },
+  { migration: '20261118180000_add_message_usefulness.sql', label: 'messages.useful', table: 'messages', column: 'useful' },
+  { migration: '20261118190000_create_search_runs.sql', label: 'search_runs', table: 'search_runs' },
 ];
 
 /** true when the object exists on the hosted project; a missing table or column is the only "false". */

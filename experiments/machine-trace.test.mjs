@@ -172,21 +172,25 @@ const source = (citation, title, extra = {}) => ({
     withheld.slice(0, 200),
   );
 
-  const dated = renderToStaticMarkup(
-    React.createElement(MessageBubble, {
-      message: message(
-        'An old answer with one new page behind it [1][2].',
-        [
-          source('[1]', 'Old page', { in_prompt: true, published: '2019-05-01' }),
-          source('[2]', 'Newer page', { in_prompt: true, published: '2026-08-02' }),
-          source('[3]', 'Undated page', { in_prompt: true }),
-        ],
-        [],
-      ),
-      isStreaming: false,
-      query: 'latest quantum error correction results',
-      onRetrySearch: () => {},
-    }),
+  /** A rendered answer, so each freshness case states only its dates and its query. */
+  const answer = (content, searchResults, query) =>
+    renderToStaticMarkup(
+      React.createElement(MessageBubble, {
+        message: message(content, searchResults, []),
+        isStreaming: false,
+        query,
+        onRetrySearch: () => {},
+      }),
+    );
+
+  const dated = answer(
+    'An old answer with one new page behind it [1][2].',
+    [
+      source('[1]', 'Old page', { in_prompt: true, published: '2019-05-01' }),
+      source('[2]', 'Newer page', { in_prompt: true, published: '2026-08-02' }),
+      source('[3]', 'Undated page', { in_prompt: true }),
+    ],
+    'latest quantum error correction results',
   );
   check(
     'the strip shows the date window the sources cover',
@@ -194,21 +198,19 @@ const source = (citation, title, extra = {}) => ({
     dated.slice(0, 240),
   );
   check('a recent newest page is shown without a flag', !dated.includes('mo old'));
+  check(
+    'the hover carries the whole window',
+    dated.includes('title="Publication window: 2019-05-01 → 2026-08-02'),
+    dated.match(/title="Publication window[^"]*"/)?.[0],
+  );
 
-  const staleAnswer = renderToStaticMarkup(
-    React.createElement(MessageBubble, {
-      message: message(
-        'An answer built on pages from before the question [1][2].',
-        [
-          source('[1]', 'Older page', { in_prompt: true, published: '2019-05-01' }),
-          source('[2]', 'Old page', { in_prompt: true, published: '2020-01-02' }),
-        ],
-        [],
-      ),
-      isStreaming: false,
-      query: 'latest quantum error correction results',
-      onRetrySearch: () => {},
-    }),
+  const staleAnswer = answer(
+    'An answer built on pages from before the question [1][2].',
+    [
+      source('[1]', 'Older page', { in_prompt: true, published: '2019-05-01' }),
+      source('[2]', 'Old page', { in_prompt: true, published: '2020-01-02' }),
+    ],
+    'latest quantum error correction results',
   );
   check(
     'and flags an old newest page for a recency query',
@@ -216,22 +218,40 @@ const source = (citation, title, extra = {}) => ({
     staleAnswer.slice(0, 240),
   );
 
-  const timeless = renderToStaticMarkup(
-    React.createElement(MessageBubble, {
-      message: message(
-        'A timeless answer [1].',
-        [source('[1]', 'Old page', { in_prompt: true, published: '2019-05-01' })],
-        [],
-      ),
-      isStreaming: false,
-      query: 'history of quantum error correction',
-      onRetrySearch: () => {},
-    }),
+  const quiet = answer(
+    'A timeless answer [1].',
+    [source('[1]', 'Old page', { in_prompt: true, published: '2019-05-01' })],
+    'history of quantum error correction',
+  );
+  check('a tight, dated, timeless window stays out of the strip', !quiet.includes('Sources dated'), quiet.slice(0, 240));
+
+  const wide = answer(
+    'A long view [1][2].',
+    [
+      source('[1]', 'Older page', { in_prompt: true, published: '2015-01-01' }),
+      source('[2]', 'Newer page', { in_prompt: true, published: '2026-01-01' }),
+    ],
+    'history of quantum error correction',
   );
   check(
-    'a timeless query shows the window without a flag',
-    timeless.includes('Sources dated') && !timeless.includes('mo old') && !timeless.includes('text-warning'),
-    timeless.slice(0, 240),
+    'a window spanning many years still speaks up',
+    wide.includes('Sources dated') && wide.includes('2015-01-01 → 2026-01-01'),
+    wide.slice(0, 240),
+  );
+
+  const mostlyUndated = answer(
+    'Sparse dates [1][2][3].',
+    [
+      source('[1]', 'Dated page', { in_prompt: true, published: '2024-01-01' }),
+      source('[2]', 'Undated page', { in_prompt: true }),
+      source('[3]', 'Another undated page', { in_prompt: true }),
+    ],
+    'history of quantum error correction',
+  );
+  check(
+    'mostly undated sources still speak up',
+    mostlyUndated.includes('Sources dated') && mostlyUndated.includes('2 undated'),
+    mostlyUndated.slice(0, 240),
   );
 }
 

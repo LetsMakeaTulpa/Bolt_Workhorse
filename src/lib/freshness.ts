@@ -10,15 +10,16 @@
  * The judgement is deliberately borrowed, not re-made. "Asked for recent material" is the same
  * `queryIntent(...).fresh > 0` at which `recencyWeight` starts moving results at all — a `fresh` of
  * zero is where the ranking ignores dates outright — and "old" is the ranking's own `aging`/`old`
- * tiers, so the receipt cannot disagree with the multiplier that placed the source. An undated source contributes nothing in either direction: the count of
- * them is reported instead, because a recency query answered by undated pages is not fresh evidence,
- * it is no evidence either way, and saying that is the point.
+ * tiers, so the receipt cannot disagree with the multiplier that placed the source.
+ *
+ * An undated source contributes nothing in either direction: the count of them is reported instead,
+ * because a recency query answered by undated pages is not fresh evidence, it is no evidence either
+ * way, and saying that is the point. The line itself only appears when it has something of that
+ * weight to say — see `notable`.
  */
 import type { Source } from '../types';
 import { queryIntent } from './fusion';
 import { recencyBadge } from './rankExplain';
-
-
 
 export interface Freshness {
   /** earliest publication date among the sourced answer's pages, `YYYY-MM-DD` */
@@ -35,12 +36,24 @@ export interface Freshness {
   stale: boolean;
   /** age of the newest dated page in whole months; null when nothing is dated */
   newestAgeMonths: number | null;
+  /** whole years between the oldest and newest dated page; 0 with fewer than two dated pages */
+  spanYears: number;
+  /**
+   * Whether the line earns its place under the answer.
+   *
+   * A receipt under every sourced answer is furniture, not information: a recent, tight, well-dated
+   * window under a timeless question tells a reader what they already assume. The line speaks up
+   * only when one of the three things it exists for is true — the query asked for recent material,
+   * the window spans many years, or most pages carry no date at all.
+   */
+  notable: boolean;
 }
 
-/** Whole months between an ISO day and now, counted the way a person counts them. */
-function monthsBetween(from: string, at: number): number {
-  const start = new Date(Date.parse(from));
-  const end = new Date(at);
+/** A window this wide is a research scope, not a publication date worth passing over in silence. */
+const WIDE_WINDOW_YEARS = 5;
+
+/** Whole months between two instants, counted the way a person counts them. */
+function monthsBetween(start: Date, end: Date): number {
   let months = (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
   if (end.getUTCDate() < start.getUTCDate()) months -= 1;
   return Math.max(0, months);
@@ -67,15 +80,53 @@ export function freshnessOf(results: Source[], query: string, now = Date.now()):
   // any recency signal at all: below this the ranking ignores dates, above it they moved the order
   const wantsRecent = intent.fresh > 0;
   const tier = newest ? recencyBadge(newest, intent, now).tier : null;
+  const spanMonths = oldest && newest ? monthsBetween(new Date(oldest), new Date(newest)) : 0;
+  const spanYears = Math.floor(spanMonths / 12);
+  const undated = results.length - dated.length;
 
   return {
     oldest,
     newest,
     dated: dated.length,
-    undated: results.length - dated.length,
+    undated,
     wantsRecent,
     // an answer with no sources at all has its own disclosure; this one is about a sourced answer
     stale: wantsRecent && results.length > 0 && (newest === null || tier === 'aging' || tier === 'old'),
-    newestAgeMonths: newest ? monthsBetween(newest, now) : null,
+    newestAgeMonths: newest ? monthsBetween(new Date(newest), new Date(now)) : null,
+    spanYears,
+    notable: wantsRecent || spanYears >= WIDE_WINDOW_YEARS || undated > dated.length,
   };
+}
+
+/**
+ * The whole window as one hover sentence.
+ *
+ * The visible line stays short — a window and a count — so the hover is where a reader can ask
+ * "how wide, how dated, and did a recency question actually get a recent page" and get the full
+ * answer without opening anything.
+ */
+export function describeFreshness(freshness: Freshness): string {
+  const { oldest, newest, dated, undated, spanYears, wantsRecent, stale, newestAgeMonths } = freshness;
+
+  if (dated === 0) {
+    return `No source carries a publication date${undated > 0 ? ` (${undated} undated)` : ''}${
+      wantsRecent ? ' — this query asks for recent material, so there is no date to judge it by' : ''
+    }`;
+  }
+
+  const span = spanYears >= 1 ? `spanning ${spanYears} ${spanYears === 1 ? 'year' : 'years'}` : 'all within a year';
+  const recency = wantsRecent
+    ? stale
+      ? `this query asks for recent material; the newest page is ${newestAgeMonths} months old`
+      : 'this query asks for recent material, and the newest page is recent'
+    : '';
+  const parts = [
+    `${oldest} → ${newest}`,
+    span,
+    `${dated} dated`,
+    undated > 0 ? `${undated} undated` : '',
+    recency,
+  ].filter(Boolean);
+
+  return `Publication window: ${parts.join(' · ')}`;
 }

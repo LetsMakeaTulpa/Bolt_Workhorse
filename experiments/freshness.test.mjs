@@ -6,7 +6,7 @@ import { asUrl, bundle, tmpPath } from './lib/build.mjs';
 const LIB = process.env.FRESHNESS_MODULE ?? tmpPath('freshness.mjs');
 if (!process.env.FRESHNESS_MODULE) bundle('src/lib/freshness.ts', LIB);
 
-const { freshnessOf } = await import(asUrl(LIB));
+const { describeFreshness, freshnessOf } = await import(asUrl(LIB));
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -81,6 +81,43 @@ const window = (sources, query = 'quantum error correction', now = NOW) => fresh
   check('an identifier year is not', window([page('2020-01-01')], 'CVE-2024-3094 details').wantsRecent === false);
   check('"history of" is not', window([page('2020-01-01')], 'history of quantum error correction').wantsRecent === false);
   check('the older wording "recently" is', window([page('2020-01-01')], 'what was recently announced').wantsRecent === true);
+}
+
+// ── 6. when the line earns its place ──────────────────────────────────────
+{
+  check('a recent, tight, dated window stays quiet', window([page('2026-09-01'), page('2026-08-01')]).notable === false);
+  check(
+    'a recency query speaks up even when it was answered well',
+    window([page('2026-09-01')], 'latest quantum results').notable === true,
+  );
+  const wide = window([page('2015-01-01'), page('2026-01-01')]);
+  check('a window spanning many years speaks up', wide.notable === true && wide.spanYears === 11, `${wide.spanYears}`);
+  check('a narrow window does not', window([page('2024-01-01'), page('2026-01-01')]).notable === false);
+  check(
+    'mostly undated sources speak up',
+    window([page('2024-01-01'), page(undefined, 'B'), page(undefined, 'C')]).notable === true,
+  );
+  check('an even split does not', window([page('2024-01-01'), page(undefined, 'B')]).notable === false);
+  check('a wholly undated answer speaks up', window([page(undefined, 'A')]).notable === true);
+  check('an answer with no sources says nothing', window([]).notable === false);
+}
+
+// ── 7. the hover keeps the whole window ───────────────────────────────────
+{
+  const mixed = window(
+    [page('2019-05-01'), page('2026-08-02'), page(undefined, 'Undated')],
+    'latest quantum error correction results',
+  );
+  const text = describeFreshness(mixed);
+  check('the hover names both ends', text.includes('2019-05-01 → 2026-08-02'), text);
+  check('and the span and both counts', /spanning 7 years/.test(text) && /2 dated/.test(text) && /1 undated/.test(text), text);
+  check('a recency window says whether it was answered', /newest page is recent/.test(text), text);
+
+  const old = window([page('2019-05-01')], 'latest quantum results');
+  check('an unfulfilled recency window names the age', /newest page is 90 months old/.test(describeFreshness(old)), describeFreshness(old));
+
+  const undatedOnly = describeFreshness(window([page(undefined, 'A')]));
+  check('a date-less answer explains itself', /No source carries a publication date/.test(undatedOnly), undatedOnly);
 }
 
 const failed = results.filter((row) => !row.ok);

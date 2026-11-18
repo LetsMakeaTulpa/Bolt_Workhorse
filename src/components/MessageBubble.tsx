@@ -14,9 +14,36 @@ import { promptWordCount } from '../lib/promptVariant';
 import { describeUnverified, isUnverifiedAnswer } from '../lib/verification';
 import { checkGrounding } from '../lib/grounding';
 import { summarizeMachine, usedSources } from '../lib/machineTrace';
-import { freshnessOf } from '../lib/freshness';
+import { describeFreshness, freshnessOf, type Freshness } from '../lib/freshness';
 import { unansweredKind } from '../lib/turnDecision';
 import { blufOf, sameQuery } from '../lib/blufQuery';
+
+/**
+ * The publication window behind an answer, shown only when `notable` says it earns the space. The
+ * visible line stays short; the hover carries the whole reading, including both dates.
+ */
+function FreshnessReceipt({ freshness }: { freshness: Freshness }) {
+  const tone = freshness.stale ? 'text-warning' : '';
+  return (
+    <span className="flex flex-wrap items-center gap-1" title={describeFreshness(freshness)}>
+      <CalendarDays size={10} className={`flex-shrink-0 ${tone}`} />
+      <span className={`uppercase tracking-wider ${tone}`}>Sources dated</span>
+      {freshness.dated > 0 ? (
+        <span className="font-mono text-text-secondary">{`${freshness.oldest} → ${freshness.newest}`}</span>
+      ) : (
+        <span className="text-warning">none</span>
+      )}
+      {freshness.undated > 0 && <span>{`· ${freshness.undated} undated`}</span>}
+      {freshness.stale && (
+        <span className="text-warning">
+          {freshness.newestAgeMonths === null
+            ? '· no date to judge recency by'
+            : `· newest is ${freshness.newestAgeMonths}mo old`}
+        </span>
+      )}
+    </span>
+  );
+}
 
 interface MessageBubbleProps {
   message: Message;
@@ -315,7 +342,9 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
 
         {!isUser &&
         !isStreaming &&
-        (machine.anything || (freshness !== null && (freshness.dated > 0 || freshness.stale))) && (
+        // a window that says nothing surprising stays out of the strip; the line is a receipt for
+        // the cases where the dates change how the answer should be read
+        (machine.anything || Boolean(freshness?.notable)) && (
           <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
             {machine.read.length > 0 && (
               <span className="flex flex-wrap items-center gap-1">
@@ -348,36 +377,7 @@ export function MessageBubble({ message, isStreaming, query, onRetrySearch, onRe
                 <span>{`· ${machine.panelOnly} panel-only`}</span>
               </span>
             )}
-            {freshness && (freshness.dated > 0 || freshness.stale) && (
-              <span
-                className="flex flex-wrap items-center gap-1"
-                title={
-                  freshness.dated === 0
-                    ? 'This query asks for recent material, but none of the sources carries a publication date'
-                    : freshness.stale
-                      ? `This query asks for recent material, and the newest dated source is ${freshness.newestAgeMonths} months old`
-                      : 'The publication dates of the sources the answer was given'
-                }
-              >
-                <CalendarDays size={10} className={`flex-shrink-0 ${freshness.stale ? 'text-warning' : ''}`} />
-                <span className={`uppercase tracking-wider ${freshness.stale ? 'text-warning' : ''}`}>
-                  Sources dated
-                </span>
-                {freshness.dated > 0 ? (
-                  <span className="font-mono text-text-secondary">{`${freshness.oldest} → ${freshness.newest}`}</span>
-                ) : (
-                  <span className="text-warning">none</span>
-                )}
-                {freshness.undated > 0 && <span>{`· ${freshness.undated} undated`}</span>}
-                {freshness.stale && (
-                  <span className="text-warning">
-                    {freshness.newestAgeMonths === null
-                      ? '· no date to judge recency by'
-                      : `· newest is ${freshness.newestAgeMonths}mo old`}
-                  </span>
-                )}
-              </span>
-            )}
+            {freshness?.notable && <FreshnessReceipt freshness={freshness} />}
             {machine.extraSearches.length > 0 && (
               <span className="flex flex-wrap items-center gap-1">
                 <Search size={10} className="flex-shrink-0" />

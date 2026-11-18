@@ -32,7 +32,7 @@ Project ref: **`mhfsggpnnjyxsnshqatf`** (hardcoded in `scripts/import-keys.mjs`;
 | `20261116170000_add_message_system_prompt.sql` | present | **not applied** (answers save without it, see below) |
 | `20261117120000_add_message_tool_searches.sql` | present | **not applied** (the model's own queries are session-only until it runs) |
 | `llm-proxy` | rate limiting, session-scoped keys | **stale** |
-| `web-search` | `engine_status`, per-user keys, `key_fallback`, the `GET` configuration probe | **stale** |
+| `web-search` | `engine_status`, per-user keys, `key_fallback`, the `GET` configuration probe, rate limit, reported compiler | **stale** |
 
 Do not trust the table — the authoritative answer is the CLI:
 
@@ -212,6 +212,26 @@ engines as "unknown", which is honest but not what the UI is for. Ten names live
 `KNOWN_SECRETS` in `supabase/functions/web-search/index.ts`; add one there when a new engine needs a
 secret, or the probe will not report it.
 
+**a3. The search gate and the compiler are live**
+
+```bash
+# over budget from one address: the 21st unauthenticated search in a minute is refused, not run
+for i in $(seq 1 21); do
+  curl -sS -o /dev/null -w "%{http_code} " -X POST "$VITE_SUPABASE_URL/functions/v1/web-search" \
+    -H "apikey: $VITE_SUPABASE_ANON_KEY" -H "content-type: application/json" \
+    -d '{"query":"ping","engines":["wikipedia"],"compileQueries":false}'
+done; echo
+```
+
+Expected: twenty `200`s, then `429`. The refusal body carries `"error":"rate_limited"`,
+`retry_after` and a `message`; no engine ran for it. All `200`s means the counter is missing —
+`20261115150000_add_request_rate_limits.sql` unapplied, or `web-search` still the old build. (If
+the minute rolls over mid-loop, the count restarts: rerun.)
+
+Every `200` body also carries `compilation` — `model`, `ran`, `reason`, `queries`, `duration_ms`,
+and `tokens` when the provider reported them. Its absence means the deployed function predates the
+reported compiler, and the activity trail will not be able to name the model call.
+
 **b. Every engine's report is honest**
 
 ```bash
@@ -303,7 +323,7 @@ belong to a different project than the one just deployed.
 ```text
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
-[ ] npm run smoke green (38 checks, 0 failed, no skips)
+[ ] npm run smoke green (43 checks, 0 failed, no skips)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

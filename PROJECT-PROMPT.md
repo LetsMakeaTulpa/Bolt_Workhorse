@@ -136,9 +136,14 @@ Precisely:
   is answering from its own knowledge, and that it must not invent URLs, titles or citation IDs.
 - The transcript shows the answer with an **`Unverified — no sources retrieved`** badge. It carries
   no citation chips, no claim ledger and no grounding verdict — there is nothing to audit.
+- Under that answer the transcript lists the turn's **gaps**, the same lines the panel carries:
+  which engine failed and why, which lane came back empty, which lane the relevance gate emptied.
+  The panel can be collapsed; the reason a search found nothing must not be. The lines are recorded
+  with the answer, so a reload still shows them.
 - With the **require-disclosure** preference on (the default), the answer's own text must state that
-  it is not backed by retrieved sources. With it off, the statement is the model's choice; the badge
-  still carries the fact. The preference changes the prose, never the badge.
+  it is not backed by retrieved sources. With it off, the statement is the model's choice. The badge
+  and the gap list are unaffected either way: a turn that collected nothing always records its gaps
+  and always shows them, because the preference is about the answer's prose, not about disclosure.
 - The **Sources panel** renders `NoSourcesCard`: the query, the gaps (which engine failed and why,
   which lane came back empty, which lane the relevance gate emptied), and the two next moves —
   a broadened query and a dork lane. It is never a blank page.
@@ -160,6 +165,12 @@ grounding strip; it is never silently stripped, because a deleted marker hides a
   the same three stock questions forever.
 - **A subject query chip** offers that phrase as a search, and is omitted when it is the same query
   as one the model already ran itself (that one is already offered under "Searched again").
+- Every search-only control says so in its label, not only in a tooltip: the post's source row action
+  is "Search only", the subject chip carries a "Search" tag, and the model's own queries sit under
+  "Searched again · search only". None of them rewrites the post it sits on; the whole-turn control
+  is "Ask again", and is the only one that does.
+  The post reports the run instead: how many sources came back, how many this answer did not have,
+  and one control that answers again from them without querying an engine.
 - Chips never appear on gap reports, stopped/replaced notes, `Error:` posts, or a mid-stream answer.
 
 ### 2.7 Stops, replacement and retry
@@ -223,6 +234,31 @@ as such.
 The proxy also enforces a model allowlist and reports the model that actually served the answer when
 it differs from the one requested.
 
+### 3.4 Search limits and the query compiler
+
+`web-search` is deployed with `verify_jwt = false`, so the public anon key reaches it. One request
+fans a query across the selected engines — spending the deployment's provider keys — and pays for a
+model call compiling the queries before any engine answers. The same atomic counter gates it,
+checked before the body is even parsed:
+
+| caller | per minute | per day |
+| --- | --- | --- |
+| signed-in account | 60 | 600 |
+| anonymous (by IP) | 20 | 100 |
+
+Buckets are namespaced `web-search:user:<hash>` and `web-search:anonymous:<hash>`, so a search never
+consumes an inference budget; the refusal is HTTP 429 with `Retry-After` and a human `message` the
+composer shows verbatim. A broken counter allows the search and logs it, the same availability
+trade the proxy makes.
+
+The compiler is bounded on every axis: one attempt, `max_tokens` 220, an abort after 12s
+(`SEARCH_COMPILER_TIMEOUT_MS`), at most five queries capped at 160 characters, de-duplicated, with
+list markers and lead-in lines stripped. It is no longer hidden: every response carries
+`compilation` — `model`, `ran`, `reason` (`ok`, `disabled`, `no_key`, `timeout`, `error`, `empty`),
+the queries used, duration and provider-reported tokens — and the activity trail writes one
+`compile` row from it. The model is `Qwen/Qwen2.5-7B-Instruct` unless `SEARCH_COMPILER_MODEL` names
+another. A search never silently spends on a rewrite it does not show.
+
 ---
 
 ## 4. Ranking specification
@@ -260,13 +296,18 @@ Sources are handed to the model in rank order: every fused source, with each pag
 - **Composer** — the primary control: depth scopes (Recent / Deep / Lost / Dark / All), an engine
   picker grouped by surface, dork playbooks, and a raw query. One-tap scopes are engine bundles, not
   a separate mode.
-- **Transcript** — answer-first prose; citations as markers; the claim ledger as a table; a grounding
+- **Transcript** — answer-first prose; citations as markers that toggle a highlight — pressing a
+  marker or its source row lights up every sentence citing that id, both directions from the mapping
+  the grounding pass already builds, with nothing new stored for it; the claim ledger as a table; a grounding
   strip that reports what it checked and what it could not; a machine strip naming the pages read in
-  full, the queries the model ran itself, and — when a run stored more fused sources than the prompt
+  full — each entry opens the exact page text the prompt carried, with how many characters it read
+  and which extractor read it — the queries the model ran itself, and — when a run stored more fused sources than the prompt
   carried — how many of them the prompt carried against the total, and the publication-date window those
   sources cover, flagged when a recency-seeking query is answered by material older than the ranking's
   own aging tier; actions (copy / share / save / retry-the-search); a
-  **Retry** row for unanswered turns; a **Keep digging** row with the subject chip and next questions.
+  **Retry** row for unanswered turns — after a failure whose search already stored sources, the retry
+  regenerates from those sources and queries no engine, so it is fast, cheap and reproducible; a
+  **Keep digging** row with the subject chip and next questions.
 - **Panel** — Map, Activity, Sources, Findings. Sources leads with the intent chip, then engine
   contribution, then per-engine groups; each row shows rank, engine badges, date and recency
   multiplier computed by the same functions that did the ranking. An empty Sources panel after a run
@@ -316,7 +357,8 @@ trusting the fixture. A shrinking margin fails too — it is the leading edge of
 
 1. Schema, RLS, service-role `app_config`; nothing private readable by `anon`.
 2. Auth gate, conversations, messages.
-3. `web-search` with the status contract; browser engines; fusion.
+3. `web-search` with the status contract, the rate gate and the reported compiler; browser engines;
+   fusion.
 4. The search controller with abort and supersession guards.
 5. `llm-proxy`: allowlist, rate limit, streaming, tool calls.
 6. Answer post-processing: follow-ups, ledger, grounding, machine trace.
@@ -338,7 +380,7 @@ reproduced. Re-read the repository instead of trusting this table.
 | area | files | what it holds |
 | --- | --- | --- |
 | `src/` | 49 | `App.tsx` (conversation and turn lifecycle), `hooks/useSearch.ts` (the run controller), `lib/` (fusion, api, engines, grounding, ledger, follow-ups, machine trace, turns), `components/` (17) |
-| `supabase/functions/` | 2 | `web-search` (engines, per-request keys, status, extraction), `llm-proxy` (rate limit, allowlist, streaming) |
+| `supabase/functions/` | 2 | `web-search` (engines, per-request keys, status, extraction, rate limit, reported compiler), `llm-proxy` (rate limit, allowlist, streaming) |
 | `supabase/migrations/` | 11 | schema, grants, `app_config` lockdown, RLS, rate limits, user keys, `system_prompt`, `tool_searches` |
 | `scripts/` | 7 | the gate runner, key importer, engine and migration verification, migration runner, preview helper |
 | `experiments/` | 45 | the suites, the ranking harness and sweep, `lib/build.mjs`, fixtures |
@@ -359,12 +401,6 @@ without their exact prompt until the `system_prompt` migration ran.
 
 These are the disagreements a builder should expect to find, and fix:
 
-1. **Zero-source runs render no gap report in the transcript.** The report is built and sent to the
-   activity log and the Sources panel only; §2.5 requires the panel card and the badge, which exist,
-   and forbids the transcript from substituting a report for an answer.
-2. **The "empty result" preference is described in Settings as "ends in a gap report instead of an
-   answer",** which is not what the setting does — it governs whether the answer's prose must
-   disclose that it is unsourced (§2.5).
-3. The transcript's gap-report renderer, including its broaden and lane buttons, is reachable only
+1. The transcript's gap-report renderer, including its broaden and lane buttons, is reachable only
    through stored or hand-written `**No sources.**` messages today; it is kept for those, not
-   generated.
+   generated. A zero-source run puts its gaps under its answer instead (§2.5), never in place of it.

@@ -66,7 +66,9 @@ it should be implemented as though it were a rule.
    search.
 3. The model streams; tokens are visible as they arrive, and the partial can be stopped.
 4. The finished answer is saved with: its model, the exact system prompt used, the sources it was
-   given, and the model's own extra search queries.
+   given, its gaps, the queries that produced those sources (`queries_used`) and the model's own
+   searches with what each added (`tool_searches`, `tool_search_yields`). The reader's verdict is
+   written to the same row when it is pressed (§2.8).
 5. A stop during streaming persists the partial, labelled as partial. A stop during **search** is a
    different state and is covered in §2.7.
 
@@ -78,6 +80,19 @@ it should be implemented as though it were a rule.
   an identity check, so a slow engine cannot overwrite newer results.
 - Cancelling cancels search **and** generation: a stale answer is as wrong as stale sources.
 - Results are regrouped per engine and fused (§4), then persisted with publication dates.
+- The model runs its own searches through two tools. `search_web` takes a plain query;
+  `search_dorks` takes one carrying an operator (`site:`, `inurl:`, `intitle:`, `filetype:`, `ext:`,
+  a quoted phrase) and refuses anything else with a sentence saying so, because a dork with no
+  operator is a plain search pretending to be one. A dork skips the query compiler — the operator
+  *is* the request — and runs only on the engines that parse operators, so it never spends a slot
+  where `site:` would be read as text. Both tools spend the same extra-search budget.
+- Each extra search records `found` and `added`, where `added: 0` says the query returned only pages
+  this answer already held — a different outcome from one that added five, never rendered the same.
+- Every run is recorded as it ran: one `search_runs` row with the per-lane lists (lane, engine,
+  query, ordered canonical urls) and a `lanes_hash` fingerprint that stays stable across runs with
+  identical lanes, whatever order the engines answered in. Fusion collapses the lanes, so this is
+  the only record from which two runs can be compared, and it is written whether or not the run
+  produced a source, because the zeros are part of the comparison.
 
 **Engine status is a contract.** Each requested engine reports exactly one of:
 
@@ -112,6 +127,12 @@ The system prompt is versioned and saved with each answer. Its requirements:
   `- [n] claim — established | claimed | contested`. `established` = several independent sources or
   a primary document; `claimed` = one source, nothing corroborating; `contested` = sources disagree,
   naming who says what. No prose restatement.
+- **The ledger is audited, not taken at its word.** Every row the model calls `established` must cite
+  a source this answer has, and every figure or name in that row must appear in the part of the page
+  the prompt carried. A row whose number is in no cited page stops reading as settled and names the
+  figure and the pages checked; a citation the answer does not have says so; a snippet-only source is
+  `unchecked` — not wrong, because the figure may be below where the snippet stopped. `claimed` and
+  `contested` rows are still audited, but their verdict is never overturned.
 - **Disagreement**: both positions with citations, and never a midpoint no source reports.
 - **Thin evidence**: say so in one line and answer only what is supported.
 - **FOLLOW-UPS**: exactly three questions a researcher would ask next, each answerable by a search,
@@ -188,6 +209,21 @@ grounding strip; it is never silently stripped, because a deleted marker hides a
   as a fresh turn — not just the search — because those states say nothing was answered.
 - The note is persisted. A reload must not put the question back on screen with nothing under it,
   and must not take its Retry away.
+- A retry records which attempt it replaced (`messages.retry_of`), so a reload can still link the
+  two. The link is written only to a row the database accepted: the foreign key would reject an id
+  that was never saved, and take the new question with it.
+
+### 2.8 Rating an answer
+
+Every finished answer carries one press — **Did this answer the question?** yes / no — stored as
+`messages.useful`: `true` answered, `false` missed, `null` nobody said. A row nobody rated is not a
+miss.
+
+- The verdict is about the whole turn — its queries, the pages the prompt carried, the terms that
+  ranked them — not about one sentence of it.
+- One press is the whole interaction; pressing the same answer again does not toggle it off.
+- The write is optimistic: the row changes at once and rolls back when the database refuses. A
+  refusal caused by the missing column says so, instead of blaming the reader.
 
 ---
 
@@ -207,11 +243,11 @@ secrets → (for inference only) the service-role-only `app_config` row.
 
 ### 3.2 Data
 
-Twelve tables, all private ones owner-scoped by RLS: `conversations`, `messages`, `sources`,
+Thirteen tables, all private ones owner-scoped by RLS: `conversations`, `messages`, `sources`,
 `findings`, `evidence`, `activity_logs`, `research_projects`, plus shared reference data
 (`research_presets`, `search_settings`), service-role-only `app_config` with an authenticated
 `app_config_public` view, client-inaccessible `request_rate_limits`, and owner-only
-`user_engine_keys`. `anon` holds no privilege on any private table.
+`user_engine_keys` and `search_runs`. `anon` holds no privilege on any private table.
 
 A schema that lags the code is tolerable, silently losing data is not: an insert naming a column the
 database does not have drops that column, saves the rest, and says so once per session.
@@ -301,13 +337,16 @@ Sources are handed to the model in rank order: every fused source, with each pag
   the grounding pass already builds, with nothing new stored for it; the claim ledger as a table; a grounding
   strip that reports what it checked and what it could not; a machine strip naming the pages read in
   full — each entry opens the exact page text the prompt carried, with how many characters it read
-  and which extractor read it — the queries the model ran itself, and — when a run stored more fused sources than the prompt
+  and which extractor read it — the queries the model ran itself, each saying what it found and how
+  much of it this answer did not already have, with a `search_dorks` call marked as a dork and
+  re-runnable as written — and — when a run stored more fused sources than the prompt
   carried — how many of them the prompt carried against the total, and the publication-date window those
   sources cover, flagged when a recency-seeking query is answered by material older than the ranking's
   own aging tier; actions (copy / share / save / retry-the-search); a
   **Retry** row for unanswered turns — after a failure whose search already stored sources, the retry
   regenerates from those sources and queries no engine, so it is fast, cheap and reproducible; a
-  **Keep digging** row with the subject chip and next questions.
+  **Keep digging** row with the subject chip and next questions; and, under every finished answer,
+  the usefulness press (§2.8).
 - **Panel** — Map, Activity, Sources, Findings. Sources leads with the intent chip, then engine
   contribution, then per-engine groups; each row shows rank, engine badges, date and recency
   multiplier computed by the same functions that did the ranking. An empty Sources panel after a run
@@ -366,11 +405,13 @@ trusting the fixture. A shrinking margin fails too — it is the leading edge of
 8. Zero-source disclosure and the panel card.
 9. Subject queries and derived questions.
 10. Ranking harness and the contested fixture; wire it all into the gate.
-11. The deploy runbook; apply migrations, redeploy functions, verify against the live deployment.
+11. Per-lane run records, so two runs can be compared after fusion has collapsed them.
+12. The reader's verdict on an answer; the outcome the weights are scored against.
+13. The deploy runbook; apply migrations, redeploy functions, verify against the live deployment.
 
 ---
 
-## Appendix A — repository snapshot (2026-11-17), not a requirement
+## Appendix A — repository snapshot (2026-11-18), not a requirement
 
 Sizes, file lists and deployment state are recorded here so a reader can orient, not so they can be
 reproduced. Re-read the repository instead of trusting this table.
@@ -379,23 +420,28 @@ reproduced. Re-read the repository instead of trusting this table.
 
 | area | files | what it holds |
 | --- | --- | --- |
-| `src/` | 49 | `App.tsx` (conversation and turn lifecycle), `hooks/useSearch.ts` (the run controller), `lib/` (fusion, api, engines, grounding, ledger, follow-ups, machine trace, turns), `components/` (17) |
-| `supabase/functions/` | 2 | `web-search` (engines, per-request keys, status, extraction, rate limit, reported compiler), `llm-proxy` (rate limit, allowlist, streaming) |
-| `supabase/migrations/` | 11 | schema, grants, `app_config` lockdown, RLS, rate limits, user keys, `system_prompt`, `tool_searches` |
+| `src/` | 57 | `App.tsx` (conversation and turn lifecycle), `hooks/useSearch.ts` (the run controller), `lib/` (33: fusion, api, engines, grounding, claim audit, ledger, follow-ups, machine trace, tool search, run record, turns), `components/` (17) |
+| `supabase/functions/` | 6 in 2 | `web-search` (engines, per-request keys, status, extraction, rate limit, reported compiler), `llm-proxy` (rate limit, allowlist, streaming), each with its own `rateLimit.ts` |
+| `supabase/migrations/` | 17 | schema, grants, `app_config` lockdown, RLS, rate limits, user keys, `system_prompt`, `tool_searches`, `gaps`, `retry_of`, `tool_search_yields`, `queries_used`, `useful`, `search_runs` |
 | `scripts/` | 7 | the gate runner, key importer, engine and migration verification, migration runner, preview helper |
-| `experiments/` | 45 | the suites, the ranking harness and sweep, `lib/build.mjs`, fixtures |
+| `experiments/` | 55 | the suites, the ranking harness and sweep, `lib/build.mjs`, fixtures |
 
 ### Deployment state at the snapshot
 
-Hosted project `mhfsggpnnjyxsnshqatf` was **behind the repository**: five migrations unapplied (user
-RLS, rate limits, user engine keys, `system_prompt`, `tool_searches`), `web-search` running a build
-older than the status contract and page extraction, `llm-proxy` without the limiter. Every command
-that would fix this needs `SUPABASE_ACCESS_TOKEN`, which was not present. `npm run migrations:check`
-prints the authoritative list of what is missing.
+Hosted project `mhfsggpnnjyxsnshqatf` is **eleven migrations behind**: everything from
+`20261115140000_add_user_auth_rls.sql` onward — user RLS, rate limits, user engine keys,
+`system_prompt`, `tool_searches`, `gaps`, `retry_of`, `tool_search_yields`, `queries_used`, `useful`
+and `search_runs`. Until `…140000` runs, every private table is still readable with the public anon
+key. Both functions are stale, measured with the anon key alone: `GET /functions/v1/web-search`
+returns 500 (`Unexpected end of JSON input`), its `POST` answers without `engine_status` or
+`compilation`, and six invalid-body posts to `llm-proxy/chat` return 400 six times — no 429, no
+`X-RateLimit-*`. The commands that fix this need `SUPABASE_ACCESS_TOKEN`, which was not present;
+`npm run migrations:check` prints the authoritative list, and `DEPLOY.md` carries the procedure and
+the measured evidence.
 
-The visible consequences were all cosmetic-but-honest: "Read in full" and "Searched again" stayed
-empty because the deployed function returned neither page text nor tool calls, and answers saved
-without their exact prompt until the `system_prompt` migration ran.
+What the drift costs: a retry reloads without its link, an extra search cannot say it added nothing,
+a usefulness press is refused, the lanes behind a run are unrecorded, and both public functions
+still answer unlimited calls from anyone holding the anon key.
 
 ### Known deltas between this specification and the snapshot
 
@@ -404,3 +450,7 @@ These are the disagreements a builder should expect to find, and fix:
 1. The transcript's gap-report renderer, including its broaden and lane buttons, is reachable only
    through stored or hand-written `**No sources.**` messages today; it is kept for those, not
    generated. A zero-source run puts its gaps under its answer instead (§2.5), never in place of it.
+2. `search_runs` is written on every run and read by nothing yet: the comparison view is still to
+   build.
+3. The usefulness verdict is stored per answer and aggregated nowhere: scoring the weights against it
+   needs a harness that does not exist yet.

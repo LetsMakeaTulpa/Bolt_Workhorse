@@ -24,7 +24,8 @@
  *   (default)        apply, then verify
  *   --plan           CLIs dry run: lists the migrations that would be applied, changes nothing
  *   --check          no token needed: probe the hosted project for the objects the pending
- *                    migrations add, and say which of them are missing
+ *                    migrations add. Exits 1 when any is missing, 2 when it cannot probe at all
+ *                    (no URL or anon key), so a build can depend on it
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -108,7 +109,7 @@ async function objectExists({ table, column }) {
 
 async function checkHosted() {
   if (!url || !anonKey) {
-    console.log('No VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env — cannot probe the hosted project.');
+    console.log('No VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env or the environment — cannot probe the hosted project.');
     return null;
   }
   console.log(`Hosted project: ${projectRef}`);
@@ -127,8 +128,13 @@ async function checkHosted() {
 }
 
 async function main() {
-  await checkHosted();
-  if (checkOnly) return 0;
+  const missing = await checkHosted();
+  if (checkOnly) {
+    // a check that returns 0 either way is not a gate: drift fails the run, and so does a probe
+    // that never happened because the credentials were absent
+    if (missing === null) return 2;
+    return missing.length === 0 ? 0 : 1;
+  }
 
   if (!token) {
     console.log(`
@@ -173,8 +179,8 @@ script never writes it to a file and never prints it.
   }
 
   console.log('\nVerifying the hosted project now has what the migrations describe:');
-  const missing = await checkHosted();
-  if (missing && missing.length > 0) {
+  const stillMissing = await checkHosted();
+  if (stillMissing && stillMissing.length > 0) {
     console.error('\nThe push reported success but the schema is still missing objects — check the push log above.');
     return 1;
   }

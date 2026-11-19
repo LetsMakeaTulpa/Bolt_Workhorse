@@ -1,0 +1,42 @@
+# Drift, caught by a clock instead of a person.
+#
+# `npm run migrations:check` probes the hosted project for the objects the pending migrations add and
+# exits non-zero when any is missing, so the hosted schema cannot fall behind the repository without
+# someone noticing. It needs no database token: the anon key is enough to tell a missing table or
+# column (404 / 42703) from a present one, and the script has no dependencies to install.
+#
+# The URL and anon key are repository secrets, not the committed `.env`:
+#   Settings → Secrets and variables → Actions → SUPABASE_URL, SUPABASE_ANON_KEY
+# `secrets` rather than `vars` for both, so the key is masked in logs. A run that cannot read them
+# exits 2 with a message instead of reporting "no drift" it never looked for.
+name: schema drift
+
+on:
+  schedule:
+    - cron: '17 6 * * *' # daily; off the hour so it does not queue behind the smoke run
+  workflow_dispatch:
+
+# one probe at a time; a newer run makes the older verdict stale and both read the same schema
+concurrency:
+  group: drift
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: probe the hosted schema
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: npm run migrations:check

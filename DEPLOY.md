@@ -130,7 +130,10 @@ npm run migrations:apply                 # replay locally, push, then verify the
 ```
 
 `npm run migrations:check` needs no token: it probes the hosted project for the objects the pending
-migrations add and names the ones that are missing.
+migrations add and names the ones that are missing. It exits **1** when any is missing and **2** when
+it cannot probe (no URL or anon key), so it fails a build rather than reporting success either way.
+`.github/workflows/drift.yml` runs it daily against the repository's `SUPABASE_URL` and
+`SUPABASE_ANON_KEY` secrets: a red scheduled run means the hosted schema has fallen behind.
 
 Under it, `scripts/apply-migrations.mjs` replays the whole set into PGlite first, then runs
 `npx --yes supabase@2.39.2 migration list` and `db push --use-api` (no Docker on this machine), and
@@ -366,7 +369,7 @@ belong to a different project than the one just deployed.
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
 [ ] npm run smoke green (47 checks, 0 failed, no skips)
-[ ] npm run migrations:check shows every object present (it needs no token)
+[ ] npm run migrations:check exits 0: every object present (it needs no token)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

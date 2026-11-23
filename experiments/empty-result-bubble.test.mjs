@@ -144,6 +144,16 @@ const nothingNew = render({
 });
 check('render: a run that found only known sources says so', /nothing new/.test(nothingNew));
 
+// the report is read at a ~130px column: the query may truncate, the count and the separator
+// may not disappear with it, and no phrase may begin with the separator
+const flat = nothingNew.replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ');
+check(
+  'render: the query truncates and the count sits outside it',
+  /class="min-w-0 truncate"[^>]*>“investor deck”<\/span> ?<span class="flex-shrink-0">returned 1 source ?·<\/span>/.test(flat),
+  'count outside the truncated span',
+);
+check('render: the separator ends a phrase instead of starting one', !/> ?·/.test(flat), 'leading separator');
+
 const foundNothing = render({
   message: { ...message('Grounded answer [1].'), search_results: [firstSource] },
   query: 'investor deck',
@@ -446,10 +456,17 @@ const productives = render({
   message: {
     ...message('Grounded answer [1].'),
     search_results: [firstSource],
-    tool_searches: ['surface code thresholds', 'reciprocal rank fusion'],
+    tool_searches: [
+      'surface code thresholds',
+      'reciprocal rank fusion',
+      'surface code decoherence budgets',
+      'site:arxiv.org filetype:pdf surface codes',
+    ],
     tool_search_yields: [
       { query: 'surface code thresholds', found: 4, added: 2 },
       { query: 'reciprocal rank fusion', found: 3, added: 0 },
+      { query: 'surface code decoherence budgets', found: 0, added: 0 },
+      { query: 'site:arxiv.org filetype:pdf surface codes', found: 3, added: 1, dork: true },
     ],
   },
   query: 'investor deck',
@@ -460,6 +477,24 @@ check(
   'render: a redundant one says nothing new',
   /nothing new/.test(productives),
   productives.match(/[^>]*nothing new/)?.[0],
+);
+// an empty search is not a redundant one: saying "nothing new" about a run that never returned a
+// source reads as "you already had these" when there was nothing to have
+check(
+  'render: a search that found nothing says so instead of nothing new',
+  /no results/.test(productives) && (productives.match(/nothing new/g) ?? []).length === 1,
+  productives.match(/[^>]*no results/)?.[0],
+);
+// a dork is not a plain extra search: the operator was the request, and the chip has to say so
+check(
+  'render: the dork chip is marked, and only the dork chip',
+  (productives.match(/>dork<\/span>/g) ?? []).length === 1,
+  String((productives.match(/>dork<\/span>/g) ?? []).length),
+);
+check(
+  'render: the dork chip names search_dorks and what it returned',
+  /Dork \(search_dorks\)[^"]*site:arxiv\.org filetype:pdf surface codes[^"]*3 sources, 1 new/.test(productives),
+  productives.match(/title="Dork[^"]*"/)?.[0],
 );
 check(
   'render: the chip still offers the query back',

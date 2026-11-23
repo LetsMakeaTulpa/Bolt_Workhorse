@@ -53,6 +53,15 @@ body {
   margin-bottom: 0.75rem;
 }
 
+/* The first paragraph of an answer is its bottom line: give it the weight the rest of the
+   breakdown does not need, so a reader gets the verdict before the working. */
+.markdown-body > p:first-child {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: #f0f1f3;
+  margin-bottom: 1rem;
+}
+
 .markdown-body h1, .markdown-body h2, .markdown-body h3 {
   font-weight: 600;
   margin-top: 1.25rem;

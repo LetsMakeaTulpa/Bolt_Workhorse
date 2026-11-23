@@ -332,6 +332,10 @@ Sources are handed to the model in rank order: every fused source, with each pag
 - **Composer** — the primary control: depth scopes (Recent / Deep / Lost / Dark / All), an engine
   picker grouped by surface, dork playbooks, and a raw query. One-tap scopes are engine bundles, not
   a separate mode.
+- **Attachments** — a paperclip in the composer adds files to the question. Each file becomes a chip
+  with its own preview of the text that will be sent; the text is read in the browser, long files are
+  truncated with the cut marked, and the attachment rides into the turn as labelled blocks ahead of
+  the question. Nothing is uploaded on attach, so a file only leaves the browser as part of a turn.
 - **Transcript** — answer-first prose; citations as markers that toggle a highlight — pressing a
   marker or its source row lights up every sentence citing that id, both directions from the mapping
   the grounding pass already builds, with nothing new stored for it; the claim ledger as a table; a grounding
@@ -411,7 +415,7 @@ trusting the fixture. A shrinking margin fails too — it is the leading edge of
 
 ---
 
-## Appendix A — repository snapshot (2026-11-18), not a requirement
+## Appendix A — repository snapshot (2026-11-23), not a requirement
 
 Sizes, file lists and deployment state are recorded here so a reader can orient, not so they can be
 reproduced. Re-read the repository instead of trusting this table.
@@ -420,13 +424,13 @@ reproduced. Re-read the repository instead of trusting this table.
 
 | area | files | what it holds |
 | --- | --- | --- |
-| `src/` | 57 | `App.tsx` (conversation and turn lifecycle), `hooks/useSearch.ts` (the run controller), `lib/` (33: fusion, api, engines, grounding, claim audit, ledger, follow-ups, machine trace, tool search, run record, turns), `components/` (17) |
+| `src/` | 58 | `App.tsx` (conversation and turn lifecycle), `hooks/useSearch.ts` (the run controller), `lib/` (34: fusion, api, engines, grounding, claim audit, ledger, follow-ups, machine trace, tool search, run record, turns), `components/` (17, including `SearchBar.tsx` with its attachment chips) |
 | `supabase/functions/` | 6 in 2 | `web-search` (engines, per-request keys, status, extraction, rate limit, reported compiler), `llm-proxy` (rate limit, allowlist, streaming), each with its own `rateLimit.ts` |
 | `supabase/migrations/` | 17 | schema, grants, `app_config` lockdown, RLS, rate limits, user keys, `system_prompt`, `tool_searches`, `gaps`, `retry_of`, `tool_search_yields`, `queries_used`, `useful`, `search_runs` |
-| `scripts/` | 7 | the gate runner, key importer, engine and migration verification, migration runner, preview helper |
-| `experiments/` | 55 | the suites, the ranking harness and sweep, `lib/build.mjs`, fixtures |
+| `scripts/` | 12 | the gate runner, key importer, engine and migration verification, migration runner, preview helper, the probe trio and their shared exit contract (`probe-anon`, `probe-functions`, `probeExit`), `migrationProbes`, `supabaseEnv` |
+| `experiments/` | 59 | 53 suites at the top level, plus `lib/` (`build.mjs`, `mock-fetch.mjs`) and the fixtures |
 
-### Deployment state at the snapshot
+### Deployment state at the snapshot (measured 2026-11-18)
 
 Hosted project `mhfsggpnnjyxsnshqatf` is **eleven migrations behind**: everything from
 `20261115140000_add_user_auth_rls.sql` onward — user RLS, rate limits, user engine keys,

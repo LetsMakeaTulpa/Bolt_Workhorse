@@ -1,6 +1,7 @@
 import { Source, Finding, ActivityLog, SourceRecord, type PromptCoverage } from '../types';
 import { queryIntent } from '../lib/fusion';
-import { describeIntent, rankSources } from '../lib/rankExplain';
+import { describeIntent, rankSources, readScoreTerms } from '../lib/rankExplain';
+import { modelSearchOrigin } from '../lib/machineTrace';
 import { coverageCount, coverageSentence, matchesCoverageFilter, summarizeCoverage, type CoverageFilter } from '../lib/sourceCoverage';
 import { SourceCard, type CardSource } from './SourceCard';
 import { NoSourcesCard } from './NoSourcesCard';
@@ -16,6 +17,8 @@ interface InvestigationPanelProps {
    * written before the prompt exists, so without this every result looks equally model-visible.
    */
   promptCoverage?: Map<string, PromptCoverage>;
+  /** the searches the model ran on its own this conversation, so a stored row can name its origin */
+  modelSearches?: string[];
   /** the last run forced the freshness multiplier on, so a badge must not claim dates were ignored */
   forcedRecency?: boolean;
   /** the queries the function actually ran: a rewritten question is shown, not hidden */
@@ -45,6 +48,7 @@ export type PanelTab = 'map' | 'activity' | 'sources' | 'evidence';
 export function InvestigationPanel({
   searchResults,
   promptCoverage,
+  modelSearches = [],
   forcedRecency,
   queriesUsed,
   onRunQuery,
@@ -63,7 +67,7 @@ export function InvestigationPanel({
   onCollapse,
 }: InvestigationPanelProps) {
   return (
-    <aside className="flex w-80 flex-col border-l border-border-subtle bg-bg-deep">
+    <aside className="flex w-80 flex-col overflow-hidden rounded-xl border border-border-subtle bg-bg-deep">
       {/* the way out of the panel, said in words: an unlabelled chevron among the tabs was invisible */}
       <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-3 py-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Investigation</span>
@@ -97,6 +101,7 @@ export function InvestigationPanel({
             query={query}
             gaps={gaps}
             promptCoverage={promptCoverage}
+            modelSearches={modelSearches}
             forcedRecency={forcedRecency}
             queriesUsed={queriesUsed}
             onRunQuery={onRunQuery}
@@ -182,6 +187,7 @@ function SourcesTab({
   query,
   gaps,
   promptCoverage,
+  modelSearches = [],
   forcedRecency,
   queriesUsed = [],
   onRunQuery,
@@ -205,6 +211,8 @@ function SourcesTab({
   focusedCitation?: string | null;
   /** select a citation from a card, lighting the sentences in the answer that cite it */
   onFocusCitation?: (id: string | null) => void;
+  /** the searches the model ran on its own this conversation, so a stored row can name its origin */
+  modelSearches?: string[];
   /** the gap lines the empty run recorded, so an empty page still explains itself */
   gaps?: string[];
   onRetrySearch?: (query: string) => void;
@@ -231,6 +239,11 @@ function SourcesTab({
         relevance_score: s.relevance_score,
         published: s.publication_date || undefined,
         query: s.original_query || query,
+        found_by: modelSearchOrigin(s.original_query, modelSearches) ?? undefined,
+        // the score's components are stored in the row's metadata; a row saved before fusion
+        // recorded them yields nothing, and the card then says the components are unknown
+        score_terms: readScoreTerms(s.metadata) ?? undefined,
+        coverage_quota: s.metadata?.coverage_quota === true ? true : undefined,
         // a stored row cannot carry this itself: it is saved before the prompt is built
         prompt: promptCoverage?.get(s.url),
       }))

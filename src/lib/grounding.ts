@@ -64,7 +64,7 @@ export interface GroundingReport {
 }
 
 /** A cited source, narrowed to what the check reads — including how much of it the prompt carried. */
-type CitedSource = Pick<
+export type CitedSource = Pick<
   Source,
   'citation_id' | 'title' | 'url' | 'snippet' | 'content' | 'in_prompt' | 'prompt_chars' | 'prompt_reason'
 >;
@@ -194,7 +194,7 @@ export function names(sentence: string, question = ''): string[] {
 }
 
 /** Whether a figure appears in the text, allowing the usual ways of writing the same number. */
-function figurePresent(figure: string, haystack: string): boolean {
+export function figurePresent(figure: string, haystack: string): boolean {
   const plain = figure.replace(/[$€£,\s]/g, '').toLowerCase();
   const padded = ` ${haystack} `;
   if (padded.includes(` ${normalize(figure)} `) || padded.includes(` ${normalize(figure)}`)) return true;
@@ -202,17 +202,17 @@ function figurePresent(figure: string, haystack: string): boolean {
   return false;
 }
 
-const namePresent = (name: string, haystack: string): boolean => haystack.includes(normalize(name));
+export const namePresent = (name: string, haystack: string): boolean => haystack.includes(normalize(name));
 
 /** The page text the prompt actually carried: capped at what that source was given. */
 const givenText = (source: CitedSource): string =>
   normalize(pageTextForPrompt(source, source.prompt_chars ?? PROMPT_CONTENT_CHARS));
 
-function pageTextOf(sources: CitedSource[]): string {
+export function pageTextOf(sources: CitedSource[]): string {
   return sources.map(givenText).filter(Boolean).join(' ');
 }
 
-function hasPageText(source: CitedSource): boolean {
+export function hasPageText(source: CitedSource): boolean {
   return givenText(source).length > 0;
 }
 
@@ -222,15 +222,21 @@ const wasGiven = (source: CitedSource): boolean =>
     ? source.prompt_reason === 'given' || source.prompt_reason === 'trimmed'
     : source.in_prompt === true;
 
+export interface CitationIndex {
+  /** citation id -> the source the prompt carried (or the stored source, on rows that predate the marks) */
+  byId: Map<string, CitedSource>;
+  /** citation id -> a source in the panel that the prompt never carried */
+  withheld: Map<string, CitedSource>;
+}
+
 /**
- * Check one answer against the sources stored with it.
+ * The one mapping from `[n]` to a source, shared by the prose audit and the claim audit.
  *
- * `question` is optional and only used to exempt names the user themselves supplied.
+ * A saved turn marks which of its sources the prompt carried. A row with no marks at all predates
+ * the record, so its stored sources are the only reading available — and the only one that does not
+ * invent an omission.
  */
-export function checkGrounding(answer: string, sources: CitedSource[], question = ''): GroundingReport {
-  // A saved turn marks which of its sources the prompt carried. A row with no marks at all predates
-  // the record, so its stored sources are the only reading available — and the only one that does not
-  // invent an omission.
+export function indexCitations(sources: CitedSource[]): CitationIndex {
   const marked = sources.some((source) => typeof source.in_prompt === 'boolean' || source.prompt_reason !== undefined);
   const idOf = (source: CitedSource, index: number) =>
     String(source.citation_id ?? `[${index + 1}]`).replace(/[[\]]/g, '').trim();
@@ -243,6 +249,16 @@ export function checkGrounding(answer: string, sources: CitedSource[], question 
     if (!marked || wasGiven(source)) byId.set(id, source);
     else withheld.set(id, source);
   });
+  return { byId, withheld };
+}
+
+/**
+ * Check one answer against the sources stored with it.
+ *
+ * `question` is optional and only used to exempt names the user themselves supplied.
+ */
+export function checkGrounding(answer: string, sources: CitedSource[], question = ''): GroundingReport {
+  const { byId, withheld } = indexCitations(sources);
 
   const unknown = new Set<string>();
   const unread = new Set<string>();

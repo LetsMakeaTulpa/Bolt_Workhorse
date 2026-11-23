@@ -48,6 +48,18 @@ export interface AnswerSignals {
   undated?: number;
   /** the ledger marks at least one claim contested */
   contested?: boolean;
+  /**
+   * The citations on those contested rows, without brackets, in ledger order. A bare boolean can
+   * only say "something is disputed", so every derived question had to ask about the subject again;
+   * the markers are what let one of them point at the rows that disagree.
+   */
+  contestedSources?: string[];
+  /**
+   * Figures or names the grounding audit could not find in any cited page, in answer order. The
+   * answer asserted them and its own sources do not carry them, so the useful next question is the
+   * page that does — a state a post can be in with no claim ledger at all.
+   */
+  unverified?: string[];
 }
 
 /** Citation markers, links, and the markdown decoration a model puts around a lead. */
@@ -226,16 +238,41 @@ function subjectIn(sentence: string): Subject {
  * old still asked "what changed in the past year", and a ledger that already marked a claim
  * contested was asked whether contrary evidence exists, which is the one thing the answer had just
  * said. So the time question names the newest date it actually has, an undated answer asks for
- * dates instead of pretending to have them, and a contested ledger asks which source settles it.
- * A page older than a year is old enough that "the past year" is a claim about the wrong window.
+ * dates instead of pretending to have them, and a contested ledger asks which of the rows that
+ * disagree settles it — naming their markers, so the chip points at evidence rather than repeating
+ * the subject. A figure the grounding audit could not find in any cited page outranks both: the
+ * question it earns is for the page that carries it. A page older than a year is old enough that
+ * "the past year" is a claim about the wrong window.
  */
 function framesFor(phrase: string, signals: AnswerSignals): string[] {
   const dated = signals.dated ?? 0;
   const undated = signals.undated ?? 0;
+  // the ledger's own citation markers, cleaned and capped: they are what make the first question
+  // point at the disagreeing rows instead of restating the subject a third time
+  const disputed = [
+    ...new Set(
+      (signals.contestedSources ?? [])
+        .map((id) => String(id).replace(/[^0-9a-z]/gi, ''))
+        .filter(Boolean),
+    ),
+  ]
+    .slice(0, 3)
+    .map((id) => `[${id}]`);
+  const settled = disputed.length > 1
+    ? `Which source settles ${phrase}: ${disputed.slice(0, -1).join(', ')} or ${disputed[disputed.length - 1]}?`
+    : disputed.length === 1
+      ? `Does ${disputed[0]} settle ${phrase}?`
+      : `Which source settles ${phrase}?`;
+  // the figures the answer could not source, named in the question that asks for their page
+  const unbacked = [...new Set((signals.unverified ?? []).map((token) => String(token).trim()).filter(Boolean))]
+    .slice(0, 3);
+  const carries = unbacked.length
+    ? `Which page carries ${unbacked.length === 1
+        ? unbacked[0]
+        : `${unbacked.slice(0, -1).join(', ')} and ${unbacked[unbacked.length - 1]}`} on ${phrase}?`
+    : null;
   const questions = [
-    signals.contested
-      ? `Which source settles ${phrase}?`
-      : `What is the strongest primary source on ${phrase}?`,
+    carries ?? (signals.contested ? settled : `What is the strongest primary source on ${phrase}?`),
     signals.contested
       ? `What would resolve the disagreement about ${phrase}?`
       : `What evidence contradicts ${phrase}?`,

@@ -129,11 +129,52 @@ npm run migrations:plan                  # dry run: what would be applied
 npm run migrations:apply                 # replay locally, push, then verify the hosted schema
 ```
 
-`npm run migrations:check` needs no token: it probes the hosted project for the objects the pending
-migrations add and names the ones that are missing. It exits **1** when any is missing and **2** when
-it cannot probe (no URL or anon key), so it fails a build rather than reporting success either way.
-`.github/workflows/drift.yml` runs it daily against the repository's `SUPABASE_URL` and
-`SUPABASE_ANON_KEY` secrets: a red scheduled run means the hosted schema has fallen behind.
+`npm run migrations:check` needs no token: it reads the probes **out of `supabase/migrations`** — every
+table, view and column the SQL files add — then asks the hosted project whether each one is there.
+`npm run migrations:check -- --dry` prints the same list and exits 0 whatever it finds, for a log you
+read rather than gate on — except **2** when it has no credentials, or when the project stopped
+answering, because then there is no list to read.
+
+Every probe request gives up after **20 s**, and the first object that gets no answer ends the pass:
+the run is already red, and asking the remaining twenty would only spend the workflow's own ten-minute
+timeout reaching a verdict this run already has. So a hung project fails the check in about twenty
+seconds rather than stalling the night.
+
+All three probes report one verdict, implemented once in `scripts/probeExit.mjs`: **0** every
+assertion held, **1** the hosted project answered wrongly, **2** the probe could not reach a verdict —
+no URL or anon key, an environment answer, or a migration that adds something the reader cannot name
+(a `DO` block that runs DDL, a construct with no rule). **2 outranks 1**: a missing object is drift,
+while an unprobed migration is a hole in the gate, and a run that only partly looked must not read as
+"apply your migrations".
+
+`npm run functions:check` asks the second question, one cheap anon-key GET per deployed function.
+`GET /functions/v1/web-search` is the configuration probe the composer already calls — it names the
+engine secrets the deployment holds, with no model call and no engine request — so requiring **200**
+with a `configured` array of names asks "is the code on the edge still the code in this repository?".
+A stale build answers 500 (which is exactly what it did for a whole audit, and again during preview)
+and now fails a run instead of waiting for someone to notice. `GET /functions/v1/llm-proxy/models`
+must answer **200** with a non-empty `models` array and a `default_model`; a **429** (our own budget)
+or **503** (no model key configured) is reported as *cannot judge* rather than as a stale build,
+because redeploying a healthy function would not fix either.
+
+`npm run rls:check` asks the third question, the one the local RLS suite cannot ask a deployed
+project: it calls the REST API with the **public anon key** and requires **401/403** from every private
+table — `conversations`, `messages`, `sources`, `findings`, `evidence`, `activity_logs`,
+`research_projects`, `user_engine_keys`, `search_runs`, `request_rate_limits`, `app_config`. A **200**
+is a failure even when it carries no rows: the grant is the problem, and rows appear the moment
+someone writes one. `research_presets` is the control — anon is *supposed* to read it — so a control
+that fails means the key or project is wrong and the run exits **2** rather than report a privacy
+verdict it cannot support. Row contents are never printed, only counts and statuses.
+
+`.github/workflows/drift.yml` runs both daily as separate steps, against the repository's
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` secrets: a red run names which half drifted — the hosted schema
+or the deployed functions.
+
+The derivation lives in `scripts/migrationProbes.mjs`, which parses the migrations into statements
+(quoted strings and `$$` bodies kept intact) and classifies each `create`/`alter table` by kind. A new
+kind of schema — a table, a view, a column — needs no edit there; a new *construct* does, and until it
+has one the check fails instead of quietly skipping it. `experiments/migration-probes.test.mjs` proves
+that, including that the repository's own migrations parse with nothing unprobed.
 
 Under it, `scripts/apply-migrations.mjs` replays the whole set into PGlite first, then runs
 `npx --yes supabase@2.39.2 migration list` and `db push --use-api` (no Docker on this machine), and
@@ -368,8 +409,11 @@ belong to a different project than the one just deployed.
 ```text
 [ ] git status clean except intended changes
 [ ] npm run build passes; tsc --noEmit passes
-[ ] npm run smoke green (47 checks, 0 failed, no skips)
+[ ] npm run smoke green (50 checks, 0 failed, no skips)
 [ ] npm run migrations:check exits 0: every object present (it needs no token)
+[ ] npm run functions:check exits 0: GET web-search answers 200 with its configured names, and
+  GET llm-proxy/models answers 200 with its model list
+[ ] npm run rls:check exits 0: every private table refuses the anon key (401/403)
 [ ] database dumped outside the repo
 [ ] supabase migration list reconciles local vs remote
 [ ] supabase db push --dry-run reviewed, then db push

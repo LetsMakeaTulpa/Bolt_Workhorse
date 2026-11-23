@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Sparkles, ArrowUp, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square, FileText } from 'lucide-react';
+import { Sparkles, ArrowUp, ChevronDown, Check, Loader2, Globe, SlidersHorizontal, Square, FileText, Paperclip, X } from 'lucide-react';
 import { ANSWER_BUDGET_WORDS, type PromptVariantStatus } from '../lib/promptVariant';
 import { DORK_ENGINE_NOTE, DORK_OPERATORS, DORK_TEMPLATES } from '../lib/dorks';
 import { ENGINE_CATALOG, ENGINE_GROUPS, SEARCH_SCOPES, matchScope, type EngineIssue } from '../lib/engines';
@@ -36,6 +36,14 @@ const KEY_DOT_TONE: Record<KeyState, string> = {
 /** States worth spelling out in a row this narrow; the rest speak through the dot and tooltip. */
 const KEY_SHOW_TEXT = new Set<KeyState>(['ready', 'deployment', 'optional', 'partial', 'missing', 'rejected', 'unused']);
 
+/** A file's text travels inside the message, so a long one is cut rather than silently refused. */
+const ATTACH_CHARS = 32_000;
+
+interface Attachment {
+  name: string;
+  text: string;
+}
+
 export const SEARCH_ENGINES = ENGINE_CATALOG.map((engine) => ({
   id: engine.id,
   label: engine.label,
@@ -68,6 +76,10 @@ interface SearchBarProps {
   deploymentSecrets?: string[] | null;
   /** which system prompt the next turn sends — a variant answers differently, so it is named here */
   promptStatus?: PromptVariantStatus;
+  /** a query pressed elsewhere in the page (a dork in an answer), waiting to become the draft */
+  draftQuery?: string | null;
+  /** the draft was taken into the box; the page clears its copy so a later press is not swallowed */
+  onDraftUsed?: () => void;
 }
 
 export function SearchBar({
@@ -86,11 +98,17 @@ export function SearchBar({
   storedKeys = [],
   issues = [],
   deploymentSecrets = null,
+  draftQuery,
+  onDraftUsed,
 }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [dorksOpen, setDorksOpen] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  /** the attachment whose text is open under the box, by index */
+  const [preview, setPreview] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // the box grows with the question instead of hiding the end of it
   useEffect(() => {
@@ -117,18 +135,50 @@ export function SearchBar({
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // A dork pressed in an answer arrives here rather than being searched on the spot: the reader
+  // gets to edit it first, and sending it is still their press. Dorks were what it was written as,
+  // so the dork switch goes on with it instead of silently compiling the operators away.
+  useEffect(() => {
+    if (!draftQuery) return;
+    setQuery(draftQuery);
+    if (!useDorks) onUseDorksChange(true);
+    onDraftUsed?.();
+    window.setTimeout(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(draftQuery.length, draftQuery.length);
+    }, 0);
+  }, [draftQuery, useDorks, onUseDorksChange, onDraftUsed]);
+
   const toggleEngine = (id: string) => {
     onEnginesChange(engines.includes(id) ? engines.filter((e) => e !== id) : [...engines, id]);
   };
 
   const activeScope = matchScope(engines);
 
+  const attachFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const added: Attachment[] = [];
+    for (const file of Array.from(files)) {
+      const text = await file.text();
+      added.push({
+        name: file.name,
+        text: text.length > ATTACH_CHARS ? `${text.slice(0, ATTACH_CHARS)}\n… (truncated)` : text,
+      });
+    }
+    setAttachments((current) => [...current, ...added]);
+  };
+
   const submit = () => {
-    const message = query.trim();
-    if (!message || disabled) return;
-    onSearch(message);
+    const asked = query.trim();
+    if (!asked || disabled) return;
+    const attached = attachments.map((file) => `--- ${file.name} ---\n${file.text}`).join('\n\n');
+    onSearch(attached ? `${asked}\n\n${attached}` : asked);
     // a sent message leaves the box: the next turn starts with nothing in it
     setQuery('');
+    setAttachments([]);
+    setPreview(null);
   };
 
   const applyDork = (pattern: string) => {
@@ -161,62 +211,139 @@ export function SearchBar({
 
   return (
     <div className="mb-1">
-      <div className="flex items-center gap-2 rounded-2xl border border-border bg-bg-elevated px-3 py-1.5 shadow-sm transition-colors focus-within:border-accent/50">
-        <Sparkles size={16} className="flex-shrink-0 text-text-muted" />
-        <textarea
-          ref={inputRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter sends and Shift+Enter starts a new line, like every other chat box
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          rows={1}
-          placeholder="Ask a question — the web is searched behind the answer…"
-          disabled={disabled}
-          className="max-h-[168px] w-full min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-text-primary placeholder-text-muted outline-none disabled:opacity-40"
-          aria-label="Ask a question"
-        />
-        {query ? (
-          <button
-            onClick={() => {
-              setQuery('');
-              inputRef.current?.focus();
-            }}
-            className="flex-shrink-0 text-[10px] text-text-muted transition-colors hover:text-text-primary"
-          >
-            clear
-          </button>
-        ) : (
-          <kbd className="hidden flex-shrink-0 rounded border border-border-subtle px-1.5 py-0.5 font-mono text-[10px] text-text-muted sm:block">
-            /
-          </kbd>
+      <div className="rounded-2xl border border-border bg-bg-elevated px-3 py-1.5 shadow-sm transition-colors focus-within:border-accent/50">
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1 pt-1">
+            {attachments.map((file, index) => (
+              <span
+                key={`${file.name}-${index}`}
+                className="flex items-center gap-1 rounded-full border border-border-subtle bg-bg-surface py-0.5 pl-2 pr-1 text-[10px] text-text-secondary"
+              >
+                <FileText size={10} className="flex-shrink-0 text-olive" />
+                <button
+                  type="button"
+                  onClick={() => setPreview(preview === index ? null : index)}
+                  title={`Preview ${file.name}`}
+                  aria-expanded={preview === index}
+                  className="max-w-[12rem] truncate transition-colors hover:text-text-primary"
+                >
+                  {file.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAttachments((current) => current.filter((_, i) => i !== index));
+                    setPreview(null);
+                  }}
+                  aria-label={`Remove ${file.name}`}
+                  className="flex-shrink-0 rounded-full p-0.5 text-text-muted transition-colors hover:text-warning"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
         )}
-        {searching && onCancel && (
+        <div className="flex items-center gap-2">
+          <Sparkles size={16} className="flex-shrink-0 text-text-muted" />
+          <textarea
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter sends and Shift+Enter starts a new line, like every other chat box
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            rows={1}
+            placeholder="Ask a question — the web is searched behind the answer…"
+            disabled={disabled}
+            className="max-h-[168px] w-full min-w-0 flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-text-primary placeholder-text-muted outline-none disabled:opacity-40"
+            aria-label="Ask a question"
+            />
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            accept=".txt,.md,.markdown,.csv,.json,.log,.html,.xml,.yml,.yaml,text/*"
+            className="hidden"
+            onChange={(e) => {
+              void attachFiles(e.target.files);
+              // so picking the same file again still counts as a change
+              e.target.value = '';
+            }}
+          />
           <button
             type="button"
-            onClick={onCancel}
-            title="Stop the running search — results already collected stay in the panel"
-            aria-label="Stop search"
-            className="flex flex-shrink-0 items-center gap-1.5 rounded-xl border border-warning/40 bg-warning-subtle px-3 py-2 text-xs font-semibold text-warning transition-colors hover:border-warning/70"
+            onClick={() => fileRef.current?.click()}
+            disabled={disabled}
+            title="Attach text files — their contents are sent with the question"
+            aria-label="Attach files"
+            className="flex-shrink-0 text-text-muted transition-colors hover:text-text-primary disabled:opacity-40"
           >
-            <Square size={11} strokeWidth={3} />
-            <span>Stop</span>
+            <Paperclip size={14} />
           </button>
-        )}
-        <button
-          onClick={submit}
-          disabled={disabled || !query.trim()}
-          title={searching ? 'Replace the running answer' : 'Send (Enter)'}
-          className="flex flex-shrink-0 items-center gap-1.5 rounded-xl bg-olive px-3.5 py-2 text-xs font-semibold text-bg-deep transition-colors hover:bg-olive-hover disabled:cursor-not-allowed disabled:opacity-30"
-        >
-          {disabled || searching ? <Loader2 size={13} className={searching ? 'animate-spin' : ''} /> : <ArrowUp size={13} />}
-          <span>{rawOnly ? 'Collect' : 'Send'}</span>
-        </button>
+          {query ? (
+            <button
+              onClick={() => {
+                setQuery('');
+                inputRef.current?.focus();
+              }}
+              className="flex-shrink-0 text-[10px] text-text-muted transition-colors hover:text-text-primary"
+            >
+              clear
+            </button>
+          ) : (
+            <kbd className="hidden flex-shrink-0 rounded border border-border-subtle px-1.5 py-0.5 font-mono text-[10px] text-text-muted sm:block">
+              /
+            </kbd>
+          )}
+          {searching && onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              title="Stop the running search — results already collected stay in the panel"
+              aria-label="Stop search"
+              className="flex flex-shrink-0 items-center gap-1.5 rounded-xl border border-warning/40 bg-warning-subtle px-3 py-2 text-xs font-semibold text-warning transition-colors hover:border-warning/70"
+            >
+              <Square size={11} strokeWidth={3} />
+              <span>Stop</span>
+            </button>
+          )}
+          <button
+            onClick={submit}
+            disabled={disabled || !query.trim()}
+            title={searching ? 'Replace the running answer' : 'Send (Enter)'}
+            className="flex flex-shrink-0 items-center gap-1.5 rounded-xl bg-olive px-3.5 py-2 text-xs font-semibold text-bg-deep transition-colors hover:bg-olive-hover disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            {disabled || searching ? <Loader2 size={13} className={searching ? 'animate-spin' : ''} /> : <ArrowUp size={13} />}
+            <span>{rawOnly ? 'Collect' : 'Send'}</span>
+          </button>
+        </div>
       </div>
+
+      {preview !== null && attachments[preview] && (
+        <div className="mt-1 rounded-xl border border-border bg-bg-surface p-2">
+          <div className="flex items-center justify-between gap-2 pb-1">
+            <span className="flex min-w-0 items-center gap-1 text-[10px] text-text-secondary">
+              <FileText size={10} className="flex-shrink-0 text-olive" />
+              <span className="truncate">{attachments[preview].name}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setPreview(null)}
+              className="flex-shrink-0 text-[10px] text-text-muted transition-colors hover:text-text-primary"
+            >
+              close
+            </button>
+          </div>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-text-muted">
+            {attachments[preview].text}
+          </pre>
+        </div>
+      )}
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1">
         {SEARCH_SCOPES.map((scope) => {

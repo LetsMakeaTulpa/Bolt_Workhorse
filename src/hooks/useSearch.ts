@@ -13,6 +13,7 @@ import {
 } from '../lib/engines';
 import { DORK_LANES, expandLane } from '../lib/dorks';
 import { compilationStatus, describeCompilation } from '../lib/compileReport';
+import { recordLanes, type RunRecord } from '../lib/runRecord';
 import type { ActivityLog, ResearchPreset, Source } from '../types';
 
 /**
@@ -54,6 +55,8 @@ export interface UseSearchOptions {
   ensureConversation: (title?: string) => Promise<string>;
   /** store the fused list; App owns the `sources` table and the panel */
   saveSources: (conversationId: string, results: Source[], originalQuery: string) => Promise<void>;
+  /** keep the per-lane lists behind the run, so a past search can be replayed and compared */
+  saveRun?: (conversationId: string, run: RunRecord) => Promise<void>;
   /** stop a completion that the new run has made stale */
   abortStream: () => void;
   /** close a run's own activity row; App owns `activity_logs`, so it writes the update */
@@ -69,6 +72,7 @@ export function useSearch({
   logActivity,
   ensureConversation,
   saveSources,
+  saveRun,
   abortStream,
   closeActivity,
 }: UseSearchOptions) {
@@ -83,6 +87,8 @@ export function useSearch({
   const [relaxedGate, setRelaxedGate] = useState(false);
   /** the queries the function actually ran, in order: a rewritten question is shown, not hidden */
   const [queriesUsed, setQueriesUsed] = useState<string[]>([]);
+  /** the same list, readable by the caller that awaited the run — state is a render behind */
+  const lastQueriesRef = useRef<string[]>([]);
   /** the last run forced the freshness multiplier on, whatever the query's intent said */
   const [forcedRecency, setForcedRecency] = useState(false);
   /** the query behind the current result set, so the panel can explain the ranking */
@@ -103,6 +109,7 @@ export function useSearch({
     const wasRunning = guard.supersede();
     setIssues([]);
     setQueriesUsed([]);
+    lastQueriesRef.current = [];
     setIsSearching(false);
     setStatus('');
     // partial results belong to the aborted run, not to the engine set the user just picked; a
@@ -123,6 +130,7 @@ export function useSearch({
     setRelaxedGate(false);
     setForcedRecency(false);
     setQueriesUsed([]);
+    lastQueriesRef.current = [];
   }, []);
 
   const performSearch = useCallback(
@@ -153,6 +161,8 @@ export function useSearch({
       setLastQuery(query);
       setForcedRecency(options.forceFresh === true);
       setQueriesUsed([]);
+      // a failed run must not hand its caller the previous run's queries
+      lastQueriesRef.current = [];
       setIssues([]);
       const preset = presets.find((p) => p.name === selectedPreset);
       const enginesToUse =
@@ -203,7 +213,9 @@ export function useSearch({
 
         // what the function actually searched for. The compiler may have rewritten the question,
         // and a reader looking at odd results deserves to see the words that were really sent.
-        setQueriesUsed(serverResponse?.queries_used?.length ? serverResponse.queries_used : [query]);
+        const sentQueries = serverResponse?.queries_used?.length ? serverResponse.queries_used : [query];
+        setQueriesUsed(sentQueries);
+        lastQueriesRef.current = sentQueries;
 
         let gathered = [...(serverResponse?.results ?? []), ...browserResults];
         let spareEngines: string[] = [];
@@ -317,6 +329,18 @@ export function useSearch({
         }
 
         if (fused.length > 0) await saveSources(convId, fused, query);
+        // The ranked lists each lane returned exist nowhere else once fusion has run — the fused
+        // rows cannot say which engine offered a page, or that an engine offered nothing. Stored
+        // whether or not the gate kept anything, because the zeros are the comparison.
+        await saveRun?.(
+          convId,
+          recordLanes(perEngine, {
+            query,
+            kind: 'search',
+            engines: [...enginesToUse, ...spareEngines],
+            queries: sentQueries,
+          }),
+        );
 
         // Update the search activity to completed
         if (searchLog) closeActivity(searchLog, 'Search completed');
@@ -343,8 +367,11 @@ export function useSearch({
         }
       }
     },
-    [engines, useDorks, presets, selectedPreset, logActivity, saveSources, abortStream, closeActivity, guard],
+    [engines, useDorks, presets, selectedPreset, logActivity, saveSources, saveRun, abortStream, closeActivity, guard],
   );
+
+  /** the queries the run that just finished sent, read straight after awaiting it */
+  const lastQueries = useCallback(() => lastQueriesRef.current, []);
 
   /** true when the run that just finished was superseded or cancelled: its answer is stale */
   const runAborted = useCallback(() => guard.aborted, [guard]);
@@ -492,6 +519,15 @@ export function useSearch({
         }
 
         if (fused.length > 0) await saveSources(conversationId, fused, `${label}: ${cleanTarget}`);
+        await saveRun?.(
+          conversationId,
+          recordLanes(perEngineQuery, {
+            query: cleanTarget,
+            kind: 'dork',
+            engines: laneEngines,
+            queries,
+          }),
+        );
       } finally {
         if (isLaneCurrent()) {
           setIsSearching(false);
@@ -499,7 +535,7 @@ export function useSearch({
         }
       }
     },
-    [engines, presets, selectedPreset, isSearching, isStreaming, logActivity, ensureConversation, saveSources, guard],
+    [engines, presets, selectedPreset, isSearching, isStreaming, logActivity, ensureConversation, saveSources, saveRun, guard],
   );
 
   /** One lane: its templates expanded against the target, ranked once by the shared batch runner. */
@@ -524,6 +560,8 @@ export function useSearch({
     forcedRecency,
     /** the queries the function actually ran, for the panel to show and re-run */
     queriesUsed,
+    /** the same list for the turn that just awaited the search, so its answer can record them */
+    lastQueries,
     lastQuery,
     performSearch,
     cancelSearch,

@@ -10,7 +10,9 @@
 // one entry, not a shell function plus a registration line.
 //
 // Anything that cannot run (missing test-only package, no network) is reported as SKIP, never as a
-// pass, and the exit code is non-zero if any check fails.
+// pass — and a skip fails the run as surely as a failure does, because a check that quietly steps
+// aside is how a suite rots. The one exception is the probe behind `--live`: it is opt-in, and
+// without credentials there is nothing for it to run.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -55,9 +57,9 @@ const asModulePath = (path) => (isAbsolute(path) ? path : `${process.cwd()}/${pa
 
 const nodeTest = (name, script, env) => run(name, process.execPath, [script], { env });
 
-function skip(name, reason) {
-  skipped.push(`${name} — ${reason}`);
-  console.log(`→ ${name}\n  SKIPPED (${reason})`);
+function skip(name, reason, { optional = false } = {}) {
+  skipped.push({ name, reason, optional });
+  console.log(`→ ${name}\n  SKIPPED (${reason})${optional ? ' — optional, not a failure' : ' — this fails the run'}`);
 }
 
 /** A test-only package the local tree is missing; true when it ends up present. Both are pinned
@@ -133,6 +135,38 @@ nodeTest('served model mismatch', 'experiments/model-served.test.mjs');
     ${err.message}`);
   }
 }
+
+// ── 3d-b. the dork tool: uncompiled, operator-capable engines only, and a refusal when none is ──
+{
+  const dorkOut = tmpPath('tool-search.mjs');
+  try {
+    bundle('src/lib/toolSearch.ts', dorkOut);
+    nodeTest('dork search rules', 'experiments/tool-search.test.mjs', { TOOL_SEARCH_MODULE: dorkOut });
+  } catch (err) {
+    failed.push('dork search rules');
+    console.log(`→ dork search rules\n  FAILED\n    ${err.message}`);
+  }
+}
+
+// ── 3d-c. the dork an answer writes out is offered back, ready to copy or send ──
+{
+  const offerOut = tmpPath('dork-offer.mjs');
+  try {
+    bundle('src/lib/dorkOffer.ts', offerOut);
+    nodeTest('dork offer', 'experiments/dork-offer.test.mjs', { DORK_OFFER_MODULE: offerOut });
+  } catch (err) {
+    failed.push('dork offer');
+    console.log(`→ dork offer\n  FAILED\n    ${err.message}`);
+  }
+}
+
+// ── 3d-d. the drift gate's probes are read out of the migrations, and a construct the reader cannot
+// name fails the gate instead of passing as "nothing to check" ──
+nodeTest('migration probes', 'experiments/migration-probes.test.mjs');
+
+// ── 3d-d2. and the three probes themselves still give the exit codes the docs promise, with fetch
+// mocked: a probe that quietly became an unconditional 0 would leave the nightly green and blind ──
+nodeTest('drift probe contracts', 'experiments/probe-contracts.test.mjs');
 
 // ── 3e. the top sources are read as pages, and a page that fails is not a search failure ──
 {
@@ -278,6 +312,15 @@ nodeTest('empty result', 'experiments/empty-result.test.mjs');
     console.log(`→ empty result bubble\n  FAILED\n    ${err.message}`);
   }
 }
+// ── 4n3. each run keeps the per-lane lists fusion would otherwise erase ─────
+nodeTest('search run lanes', 'experiments/run-record.test.mjs');
+
+// ── 4o0. the ledger's established rows are checked against their cited pages ─
+nodeTest('claim ledger audit', 'experiments/claim-audit.test.mjs');
+
+// ── 4o1. one press says whether the answer was useful, and is stored with it ─
+nodeTest('answer usefulness', 'experiments/usefulness.test.mjs');
+
 // ── 4o2. a citation and its source row light up the same sentences ───────────
 if (existsSync(join('node_modules', 'react-test-renderer'))) {
   nodeTest('citation focus', 'experiments/citation-focus.test.mjs');
@@ -310,9 +353,9 @@ if (ensurePackage('@electric-sql/pglite', '@electric-sql/pglite', 'PGlite')) {
 if (live) {
   const bash = spawnSync('bash', ['-c', 'true'], { encoding: 'utf8' });
   if (!existsSync('.env')) {
-    skip('live RLS probes', 'no .env with Supabase credentials');
+    skip('live RLS probes', 'no .env with Supabase credentials', { optional: true });
   } else if (bash.status !== 0) {
-    skip('live RLS probes', 'the probe is a bash script and bash is not available here');
+    skip('live RLS probes', 'the probe is a bash script and bash is not available here', { optional: true });
   } else {
     const env = {};
     for (const line of readFileSync('.env', 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/)) {
@@ -327,11 +370,20 @@ console.log('\n─────────────────────�
 console.log(`passed: ${passed.length}`);
 if (skipped.length > 0) {
   console.log(`skipped: ${skipped.length}`);
-  for (const entry of skipped) console.log(`  ${entry}`);
+  for (const entry of skipped) console.log(`  ${entry.name} — ${entry.reason}${entry.optional ? ' (optional)' : ''}`);
 }
-if (failed.length > 0) {
-  console.log(`failed: ${failed.length}`);
-  for (const entry of failed) console.log(`  ${entry}`);
+// a skip is not a pass: anything that did not run is a hole in the gate, so only the opt-in probes
+// are allowed to be absent
+const blocking = skipped.filter((entry) => !entry.optional);
+if (failed.length > 0 || blocking.length > 0) {
+  if (failed.length > 0) {
+    console.log(`failed: ${failed.length}`);
+    for (const entry of failed) console.log(`  ${entry}`);
+  }
+  if (blocking.length > 0) {
+    console.log(`\nnot run (a skip is not a pass): ${blocking.length}`);
+    for (const entry of blocking) console.log(`  ${entry.name} — fix the cause: ${entry.reason}`);
+  }
   process.exit(1);
 }
 console.log('failed: 0');

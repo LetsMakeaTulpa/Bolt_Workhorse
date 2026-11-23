@@ -362,6 +362,73 @@ check(
   `${forcedOrder.length} vs ${plainOrder.length}`,
 );
 
+// ── score terms: the panel's breakdown must be the score's arithmetic ───────
+// The card will show engine weight × rank term × coverage × freshness × agreement; if that product
+// is not the number the list was sorted by, the explanation is a story rather than a receipt.
+const BLOAT = 'postgres index bloat tuning';
+const laneItem = (title, url, engine) => ({ title, url, snippet: BLOAT, source_engine: engine });
+const bloatLists = {
+  exa: [
+    laneItem('Alpha handbook', 'https://one.example/a', 'exa'),
+    laneItem('Beta handbook', 'https://two.example/b', 'exa'),
+    laneItem('Gamma handbook', 'https://three.example/c', 'exa'),
+  ],
+  openlibrary: [laneItem('Classic edition', 'https://four.example/d', 'openlibrary')],
+};
+const product = (terms) =>
+  terms.rankTerm *
+  terms.coverage ** terms.exponent *
+  terms.freshnessMultiplier *
+  terms.agreementMultiplier *
+  terms.mergeMultiplier;
+
+{
+  const detailed = fuseResultsDetailed(BLOAT, bloatLists, { now: NOW, limit: 3 });
+  const rows = detailed.results;
+  check('every fused row carries its score terms', rows.length > 0 && rows.every((row) => row.score_terms), String(rows.length));
+  check(
+    'the terms multiply back to the score the list is sorted by',
+    rows.every((row) => Math.abs(product(row.score_terms) - row.relevance_score) < 1e-12),
+    rows.map((row) => `${product(row.score_terms).toFixed(6)}/${row.relevance_score.toFixed(6)}`).join(' '),
+  );
+  check(
+    'the engine weight is the one fusion used for this query',
+    rows.every((row) => Math.abs(row.score_terms.weight - engineWeights(BLOAT, NOW)[row.score_terms.engine]) < 1e-12),
+  );
+  const first = rows.find((row) => row.score_terms.engine === 'exa');
+  check('the rank term names the position it came from', first.score_terms.rank === 0 && Math.abs(first.score_terms.rankTerm - first.score_terms.weight / 61) < 1e-12, JSON.stringify(first.score_terms));
+
+  // limit 3 against 4 entities: the low-weight engine cannot reach the cut on score, so its slot is
+  // the coverage pass's doing — and only that row is labelled, not the engine whose best result led.
+  const quotaRows = rows.filter((row) => row.coverage_quota);
+  check('a row kept only to cover an engine is labelled', quotaRows.length === 1 && quotaRows[0].score_terms.engine === 'openlibrary', JSON.stringify(quotaRows.map((row) => row.score_terms.engine)));
+  check('a row that earned its slot is not labelled', rows[0].coverage_quota === undefined, String(rows[0].coverage_quota));
+  check(
+    'a quota row still explains its own score',
+    Math.abs(product(quotaRows[0].score_terms) - quotaRows[0].relevance_score) < 1e-12,
+  );
+
+  const roomy = fuseResultsDetailed(BLOAT, bloatLists, { now: NOW, limit: 10 }).results;
+  check('when the score fills the list nothing is claimed as quota-placed', roomy.every((row) => row.coverage_quota === undefined));
+}
+
+{
+  const shared = {
+    exa: [{ title: 'Reciprocal rank fusion explained', url: 'https://shared.example/p', snippet: 'rrf', source_engine: 'exa' }],
+    tavily: [{ title: 'Reciprocal rank fusion explained', url: 'https://shared.example/p', snippet: 'rrf', source_engine: 'tavily' }],
+  };
+  const row = fuseResultsDetailed('reciprocal rank fusion', shared, { now: NOW }).results[0];
+  check(
+    'agreement and merging are separate multipliers from the same two results',
+    row.score_terms.agreement === 2 &&
+      row.score_terms.merged === 2 &&
+      Math.abs(row.score_terms.agreementMultiplier - 1.02) < 1e-12 &&
+      Math.abs(row.score_terms.mergeMultiplier - 1.15) < 1e-12,
+    JSON.stringify(row.score_terms),
+  );
+  check('the merged row still multiplies back to its score', Math.abs(product(row.score_terms) - row.relevance_score) < 1e-12);
+}
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);
 if (failed.length) process.exit(1);

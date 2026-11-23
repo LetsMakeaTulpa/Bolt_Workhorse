@@ -1,8 +1,9 @@
-import { Clock, ExternalLink, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, Clock, ExternalLink, Eye, EyeOff, Layers, Search, Sparkles } from 'lucide-react';
 import { queryIntent } from '../lib/fusion';
 import { citationIdOf } from '../lib/citationFocus';
-import type { PromptCoverage } from '../types';
-import { intentBadge, recencyBadge } from '../lib/rankExplain';
+import type { PromptCoverage, ScoreTerms } from '../types';
+import { intentBadge, recencyBadge, scoreTermRows } from '../lib/rankExplain';
 
 /** One row of the Sources panel: what was retrieved, and how the ranking treated it. */
 export interface CardSource {
@@ -15,11 +16,17 @@ export interface CardSource {
   published?: string;
   /** the query this source answered, kept per row so a reloaded list still explains itself */
   query?: string;
+  /** the model's own extra search that brought this row in, when one did */
+  found_by?: string;
   /**
    * whether the prompt carried this source and why it did or did not. Absent when no saved answer
    * recorded a verdict — unknown, not "never shown".
    */
   prompt?: PromptCoverage;
+  /** the components of the fusion score, when the row recorded them */
+  score_terms?: ScoreTerms;
+  /** the row is here because the coverage quota kept its engine represented, not for its score */
+  coverage_quota?: boolean;
 }
 
 /**
@@ -91,6 +98,11 @@ export function SourceCard({
   const selectable = answerId !== '' && Boolean(onFocusCitation);
   const toggle = () => onFocusCitation?.(active ? null : answerId);
   const score = source.relevance_score;
+  /** the breakdown is a disclosure: the badge row stays the summary it was */
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const terms = source.score_terms;
+  const breakdownRows = terms ? scoreTermRows(terms) : [];
+  const canExplain = Boolean(terms) || (typeof score === 'number' && score > 0) || source.coverage_quota === true;
   const intent = queryIntent(source.query ?? '');
   const recency = recencyBadge(source.published, intent, Date.now(), forcedRecency);
   const routing = intentBadge(source.source_engine, source.query ?? '');
@@ -153,6 +165,17 @@ export function SourceCard({
             #{rank}
           </span>
         )}
+        {source.found_by && (
+          // the chip strip under the answer names the searches; this says which of them produced
+          // this row, so the panel can be read on its own
+          <span
+            title={`Brought in by the model's own search “${source.found_by}”, not by the question you asked`}
+            className="flex items-center gap-0.5 rounded border border-accent/30 bg-accent-subtle px-1 py-0.5 font-mono text-accent"
+          >
+            <Search size={8} />
+            <span className="max-w-[9rem] truncate">via “{source.found_by}”</span>
+          </span>
+        )}
         {mark && (
           // the panel lists what the search returned; this says what the prompt did with it, and
           // why, so a panel-only result is not mistaken for evidence behind the answer
@@ -166,6 +189,15 @@ export function SourceCard({
           >
             {mark.carried ? <Eye size={8} /> : <EyeOff size={8} />}
             {mark.label}
+          </span>
+        )}
+        {source.coverage_quota && (
+          <span
+            title="Kept by the coverage quota: this row is in the list because its engine would otherwise be missing, not because its score reached the cut"
+            className="flex items-center gap-0.5 rounded border border-border-subtle bg-bg-hover px-1 py-0.5 font-mono text-text-muted"
+          >
+            <Layers size={8} />
+            coverage quota
           </span>
         )}
         {score !== undefined && score > 0 && (
@@ -202,6 +234,66 @@ export function SourceCard({
           </span>
         )}
       </div>
+
+      {/* Why this row sits here: the score's factors, with the arithmetic, so the order can be
+          checked rather than taken on trust. A row saved before the terms were recorded says so. */}
+      {canExplain && (
+        <div className="mt-1">
+          <button
+            type="button"
+            data-score-breakdown={url}
+            aria-expanded={breakdownOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              setBreakdownOpen((open) => !open);
+            }}
+            onKeyDown={(event) => event.stopPropagation()}
+            title={
+              terms
+                ? 'Show the engine weight, rank term, coverage, freshness and agreement that produced this score'
+                : 'Show what was recorded about this score'
+            }
+            className="flex items-center gap-0.5 rounded px-0.5 text-[9px] text-text-muted transition-colors hover:text-text-primary"
+          >
+            <ChevronDown
+              size={9}
+              className={`flex-shrink-0 transition-transform ${breakdownOpen ? 'rotate-180' : ''}`}
+            />
+            Why this rank
+          </button>
+          {breakdownOpen &&
+            (terms ? (
+              <dl
+                data-score-terms={url}
+                className="mt-1 space-y-0.5 rounded border border-border-subtle bg-bg-deep px-2 py-1.5 text-[9px]"
+              >
+                {breakdownRows.map((row) => (
+                  <div key={row.label} title={row.detail} className="flex items-baseline justify-between gap-2">
+                    <dt className="text-text-muted">{row.label}</dt>
+                    <dd className="flex-shrink-0 font-mono text-text-secondary">{row.value}</dd>
+                  </div>
+                ))}
+                {source.coverage_quota && (
+                  <p className="border-t border-border-subtle pt-1 text-warning">
+                    In this list via the coverage quota: its engine&rsquo;s best result scored below the cut.
+                  </p>
+                )}
+              </dl>
+            ) : (
+              <div className="mt-1 rounded border border-border-subtle bg-bg-deep px-2 py-1.5 text-[9px]">
+                <p className="text-text-muted">
+                  This row was saved with its total score only — the components behind it were not recorded.
+                </p>
+                {/* the placement is known from the row itself even when the score behind it is not */}
+                {source.coverage_quota && (
+                  <p className="mt-1 border-t border-border-subtle pt-1 text-warning">
+                    In this list via the coverage quota: its engine&rsquo;s best result scored below the cut.
+                  </p>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

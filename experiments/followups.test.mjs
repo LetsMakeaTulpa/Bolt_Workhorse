@@ -166,14 +166,35 @@ check(
 
 const contested = blufOf('Surface code thresholds are the binding constraint.', {
   contested: true,
+  contestedSources: ['1', '3'],
   dated: 1,
   newest: '2026-08-02',
   newestAgeMonths: 3,
 });
 check(
-  'bluf: a contested ledger asks which source settles it',
-  contested.followUps[0] === 'Which source settles surface code thresholds?',
+  'bluf: a contested ledger names the rows that disagree',
+  contested.followUps[0] === 'Which source settles surface code thresholds: [1] or [3]?',
   contested.followUps[0],
+);
+check(
+  'bluf: the markers are where the evidence is, not another restatement of the subject',
+  /\[1\]/.test(contested.followUps[0]) && /\[3\]/.test(contested.followUps[0]),
+  contested.followUps[0],
+);
+const oneSide = blufOf('Surface code thresholds are the binding constraint.', {
+  contested: true,
+  contestedSources: ['2'],
+});
+check(
+  'bluf: one contested marker asks about that source directly',
+  oneSide.followUps[0] === 'Does [2] settle surface code thresholds?',
+  oneSide.followUps[0],
+);
+const unmarkedContest = blufOf('Surface code thresholds are the binding constraint.', { contested: true });
+check(
+  'bluf: a contested row with no marker keeps the plain question',
+  unmarkedContest.followUps[0] === 'Which source settles surface code thresholds?',
+  unmarkedContest.followUps[0],
 );
 check(
   'bluf: and asks what would resolve it rather than what could contradict it',
@@ -182,9 +203,50 @@ check(
   contested.followUps[1],
 );
 check('bluf: a fresh window keeps the past-year question', /past year/.test(contested.followUps[2]), contested.followUps[2]);
+
+// an answer with no ledger at all can still carry a figure its own sources do not: the first thing
+// to ask is not another restatement of the subject but the page that carries the figure
+const unsourced = blufOf('Surface code thresholds are the binding constraint.', { unverified: ['0.91'] });
+check(
+  'bluf: a figure the audit could not find asks for its page',
+  unsourced.followUps[0] === 'Which page carries 0.91 on surface code thresholds?',
+  unsourced.followUps[0],
+);
+check(
+  'bluf: and keeps the neutral contradiction question behind it',
+  unsourced.followUps[1] === 'What evidence contradicts surface code thresholds?',
+  unsourced.followUps[1],
+);
+check('bluf: a grounded answer does not ask for a page', !/Which page carries/.test(lede.followUps.join(' | ')));
+
+const several = blufOf('Surface code thresholds are the binding constraint.', {
+  unverified: ['0.91', '12%', '47%', 'dropped'],
+});
+check(
+  'bluf: several unsourced figures are listed and capped at three',
+  several.followUps[0] === 'Which page carries 0.91, 12% and 47% on surface code thresholds?',
+  several.followUps[0],
+);
+
+const both = blufOf('Surface code thresholds are the binding constraint.', {
+  contested: true,
+  contestedSources: ['1', '3'],
+  unverified: ['0.91', '0.91'],
+});
+check(
+  'bluf: an unsourced figure outranks the contest, and repeats are dropped',
+  both.followUps[0] === 'Which page carries 0.91 on surface code thresholds?',
+  both.followUps[0],
+);
+check(
+  'bluf: the disagreement question still follows it',
+  /resolve the disagreement/.test(both.followUps[1]),
+  both.followUps[1],
+);
+
 check(
   'bluf: every state still asks exactly three questions about the subject',
-  [stale, undatedAnswer, contested].every(
+  [stale, undatedAnswer, contested, unsourced].every(
     (answer) =>
       answer.followUps.length === 3 &&
       answer.followUps.every((q) => q.endsWith('?') && /surface code thresholds/.test(q)),
@@ -197,21 +259,27 @@ check(
 
 // the signal-aware frames are still fixed text: the only new words are the date the receipt shows
 const frameWords = new Set(
-  'which source settles what would resolve the disagreement about is the strongest primary on evidence contradicts has changed since in past year date sources'.split(
+  'which source settles settle what would resolve the disagreement about is the strongest primary on evidence contradicts has changed since in past year date sources does or page carries'.split(
     ' ',
   ),
 );
 check(
-  'bluf: signalled questions add no words of their own beyond the date',
-  [stale, undatedAnswer, contested].every((answer) =>
+  'bluf: signalled questions add no words of their own beyond the date, the markers and the figure',
+  [stale, undatedAnswer, contested, oneSide, unsourced].every((answer) =>
     answer.followUps.every((q) =>
       q
         .toLowerCase()
         .match(/[a-z0-9-]+/g)
-        .every((word) => frameWords.has(word) || subject.has(word) || /^\d{4}-\d{2}-\d{2}$/.test(word)),
+        .every(
+          (word) =>
+            frameWords.has(word) ||
+            subject.has(word) ||
+            /^\d{4}-\d{2}-\d{2}$/.test(word) ||
+            /^\d+$/.test(word),
+        ),
     ),
   ),
-  [stale.followUps, undatedAnswer.followUps, contested.followUps].join(' | '),
+  [stale.followUps, undatedAnswer.followUps, contested.followUps, oneSide.followUps, unsourced.followUps].join(' | '),
 );
 
 console.log(`\n${passed}/${passed + failures.length} assertions passed`);

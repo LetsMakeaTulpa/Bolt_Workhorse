@@ -37,10 +37,12 @@ export default {
           muted: '#868a90',
           dim: '#565a60',
         },
-        // status colours are grey first; the remaining hue is just enough to tell them apart
-        // (<=9% saturation), and `subtle` gives each one a background for badges and banners
+        // status colours stay quiet, but they have to be told apart: `warning` was #aaa7a1, three
+        // points of saturation off the secondary text it sat beside, so an amber flag read as a
+        // plain caption. It keeps the palette's restraint and carries enough hue to be a flag.
+        // `subtle` gives each one a background for badges and banners.
         success: { DEFAULT: '#8e9a92', subtle: '#141715' },
-        warning: { DEFAULT: '#aaa7a1', subtle: '#171614' },
+        warning: { DEFAULT: '#c8a36a', subtle: '#1e1913' },
         error: { DEFAULT: '#a79597', subtle: '#1a1415' },
         info: { DEFAULT: '#9aa3ad', subtle: '#14161a' },
       },

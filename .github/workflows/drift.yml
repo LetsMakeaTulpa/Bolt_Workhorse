@@ -1,9 +1,21 @@
 # Drift, caught by a clock instead of a person.
 #
-# `npm run migrations:check` probes the hosted project for the objects the pending migrations add and
-# exits non-zero when any is missing, so the hosted schema cannot fall behind the repository without
-# someone noticing. It needs no database token: the anon key is enough to tell a missing table or
-# column (404 / 42703) from a present one, and the script has no dependencies to install.
+# Three questions, because the hosted project drifts in three ways. `npm run migrations:check` proves
+# the schema still matches the migration files; `npm run functions:check` proves the code running on
+# the edge is still the code here; `npm run rls:check` proves a stranger holding the site's own anon
+# key still cannot read the private tables — the local RLS suite tests the schema the migrations would
+# build, not what the hosted project actually grants. A schema that is behind and a function deployed months ago look
+# identical from the database, and a stale `web-search` answered every request with a 500 while the
+# schema checks stayed green — so the build is asked for something only a current version can say.
+#
+# `migrations:check` probes every object the migration files add — tables, views and columns, read
+# out of the SQL rather than kept in a list. None of the three needs a database token: the anon key is
+# enough to tell a missing table or column (404 / 42703) from a present one, and the scripts have no
+# dependencies to install.
+#
+# All three report the same verdict (scripts/probeExit.mjs): 0 every assertion held, 1 the project
+# answered wrongly, 2 it could not reach a verdict — no key, an environment answer, or a migration
+# whose SQL the reader cannot name. 2 outranks 1, so a partly blind run never reads as a plain finding.
 #
 # The URL and anon key are repository secrets, not the committed `.env`:
 #   Settings → Secrets and variables → Actions → SUPABASE_URL, SUPABASE_ANON_KEY
@@ -35,8 +47,22 @@ jobs:
         with:
           node-version: 20
 
+      # separate steps so a red run names which half drifted: the database, or the deployed build
       - name: probe the hosted schema
         env:
           VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: npm run migrations:check
+
+      - name: probe the deployed functions
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: npm run functions:check
+
+      # the question the local RLS suite cannot ask the hosted project: can a stranger read it?
+      - name: probe anon exposure
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: npm run rls:check

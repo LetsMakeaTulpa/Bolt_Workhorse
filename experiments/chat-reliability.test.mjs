@@ -9,7 +9,7 @@ if (!process.env.TURN_DECISION_MODULE) bundle('src/lib/turnDecision.ts', TURN);
 if (!process.env.MESSAGE_INSERT_MODULE) bundle('src/lib/messageInsert.ts', INSERT);
 
 const { decideAfterSearch, unansweredKind, STOPPED_SEARCH_NOTE, SUPERSEDED_SEARCH_NOTE } = await import(asUrl(TURN));
-const { insertRowTolerant, missingColumnFrom, noteDroppedColumns, resetDroppedColumnNotices, resetLearntColumns } = await import(asUrl(INSERT));
+const { insertRowTolerant, missingColumnFrom, noteDroppedColumns, resetDroppedColumnNotices, resetLearntColumns, retryLinkFor } = await import(asUrl(INSERT));
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -141,6 +141,25 @@ function fakeClient({ reject = [], failWith = null } = {}) {
   const { client } = fakeClient();
   const outcome = await insertRowTolerant(client, 'messages', { role: 'assistant', content: 'hi' }, { select: false });
   check('saving without select still succeeds', outcome.error === null);
+}
+
+// retry_of is a foreign key: the row it names has to be in the table, and a row saved under its
+// own id is the one the transcript links to
+{
+  const saved = new Set(['attempt-1']);
+  check('a retry link names a row the database saved', retryLinkFor('attempt-1', saved) === 'attempt-1');
+  check('a retry link to an unsaved row is dropped rather than failing the insert', retryLinkFor('attempt-2', saved) === null);
+  check('a first attempt carries no link', retryLinkFor(undefined, saved) === null && retryLinkFor(null, saved) === null);
+}
+
+{
+  const { client, calls } = fakeClient();
+  await insertRowTolerant(client, 'messages', { id: 'attempt-3', role: 'user', content: 'q', retry_of: 'attempt-1' });
+  check(
+    'a row is saved under the id it is rendered under, with its link',
+    calls[0].payload.id === 'attempt-3' && calls[0].payload.retry_of === 'attempt-1',
+    JSON.stringify(calls[0].payload),
+  );
 }
 
 check('missingColumnFrom reads the Postgres wording', missingColumnFrom({ message: 'column messages.system_prompt does not exist' }, 'messages') === 'system_prompt');

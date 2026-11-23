@@ -113,7 +113,7 @@ const check = (name, ok, detail = '') => {
 };
 
 // ---- the hook, driven the way App drives it -------------------------------------------------
-const log = { activity: [], saved: [], closed: [], aborts: 0 };
+const log = { activity: [], saved: [], closed: [], aborts: 0, runs: [] };
 let rowId = 0;
 
 const options = {
@@ -137,6 +137,9 @@ const options = {
   ensureConversation: async () => 'conversation-1',
   saveSources: async (conversationId, saved, originalQuery) => {
     log.saved.push({ conversationId, query: originalQuery, titles: saved.map((source) => source.title) });
+  },
+  saveRun: async (conversationId, record) => {
+    log.runs.push({ conversationId, ...record });
   },
   abortStream: () => {
     log.aborts += 1;
@@ -206,6 +209,22 @@ check(
   'the row lists the dead lanes, even when there are none',
   Array.isArray(yieldRows[0]?.details?.dead_lanes) && yieldRows[0].details.dead_lanes.length === 0,
   JSON.stringify(yieldRows[0]?.details?.dead_lanes),
+);
+
+// The lane lists themselves: the fused output cannot say what each engine offered, so a run that
+// does not store them cannot be compared with the next one.
+check('the run stores its per-lane lists', log.runs.length === 1 && log.runs[0].query === 'crispr off-target prediction', JSON.stringify(log.runs.map((run) => run.query)));
+check(
+  'the stored lane keeps the engine and its ranked urls',
+  log.runs[0]?.lanes?.[0]?.lane === 'duckduckgo' && log.runs[0].lanes[0].urls.length === 2,
+  JSON.stringify(log.runs[0]?.lanes),
+);
+check('the run carries a stable fingerprint', /^[0-9a-f]{16}$/.test(log.runs[0]?.lanesHash ?? ''), log.runs[0]?.lanesHash);
+check('the run names the engines it asked', JSON.stringify(log.runs[0]?.engines) === JSON.stringify(['duckduckgo']), JSON.stringify(log.runs[0]?.engines));
+check(
+  'the run records the queries the search sent',
+  JSON.stringify(log.runs[0]?.queries) === JSON.stringify(['crispr off-target prediction']),
+  JSON.stringify(log.runs[0]?.queries),
 );
 
 const abortedFirstRun = requests.at(-2);
@@ -284,6 +303,8 @@ assert.deepEqual(
   ['postgres index bloat', 'crispr off-target prediction', 'graph neural network', 'rust async runtime'],
 );
 check('every search started exactly one engine request', requests.filter((request) => request.engines?.includes('duckduckgo')).length === 4, String(requests.length));
+
+check('a superseded or cancelled run stores no lanes', log.runs.length === 1, `${log.runs.length} runs`);
 
 await act(async () => {
   root.unmount();

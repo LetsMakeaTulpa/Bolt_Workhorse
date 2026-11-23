@@ -23,6 +23,11 @@ export interface ToolSearchYield {
   found: number;
   /** those this answer did not already have; 0 means the search was redundant */
   added: number;
+  /**
+   * the run came from `search_dorks`: its operators were sent to the engines as written rather
+   * than compiled away, so the chip has to read differently from a plain extra search
+   */
+  dork?: boolean;
 }
 
 export interface Message {
@@ -39,6 +44,13 @@ export interface Message {
    * produced it. Null on rows written before it was recorded — unknown, not "built-in".
    */
   system_prompt?: string | null;
+  /**
+   * The queries the search actually sent for this answer's question, in order, after the compiler
+   * rewrote it. "What did the model read" starts with what was asked, and the question on screen is
+   * not always the question the engines saw. Empty for a turn that ran no search — a retry answered
+   * from sources already retrieved, or search switched off.
+   */
+  queries_used?: string[];
   /** extra searches the model ran on its own during this turn, oldest first */
   tool_searches?: string[];
   /** what each of those searches added; absent on rows written before it was recorded */
@@ -55,6 +67,57 @@ export interface Message {
    * collapsed panel must not be the only place the reason exists. Empty on an answer with sources.
    */
   gaps?: string[];
+  /**
+   * What the reader said about whether this answer met the question, when they said anything at all.
+   *
+   * Everything else recorded with an answer measures relevance — how well a page matched the words,
+   * how the fusion pass ranked it — and none of that says the answer was worth having. Without an
+   * outcome the engine weights and the ranking cuts had nothing to be scored against. One press
+   * labels this whole turn: its queries, the pages the prompt carried, and their score terms. Null
+   * or absent means no one has said either way, which is not the same as "no".
+   */
+  useful?: boolean | null;
+}
+
+/**
+ * The arithmetic behind one source's fusion score.
+ *
+ * The card shows the total (`RRF 0.0328`), which says a row beat another but not why. These are the
+ * terms that multiplied into it — engine trust, reciprocal rank, term coverage, the freshness and
+ * agreement lifts — recorded by the fusion pass so a reloaded Sources panel can still explain the
+ * order instead of only asserting it.
+ */
+export interface ScoreTerms {
+  /** the engine whose result the score started from */
+  engine: string;
+  /** the lane it arrived on: the engine id, or `engine·q2` for one of a dork batch's queries */
+  lane: string;
+  /** per-engine trust for this query */
+  weight: number;
+  /** 0-based position within that lane's list */
+  rank: number;
+  /** the reciprocal-rank constant this run used */
+  k: number;
+  /** weight / (k + rank + 1) — the reciprocal-rank term */
+  rankTerm: number;
+  /** IDF-weighted coverage of the result by the question, 0-1 */
+  coverage: number;
+  /** the exponent the run applied to coverage */
+  exponent: number;
+  /** the freshness weight before the gain is applied, 0-1 */
+  freshness: number;
+  /** 1 + recencyGain × freshness */
+  freshnessMultiplier: number;
+  /** engines that returned this source, before the agreement cap */
+  agreement: number;
+  /** 1 + agreementGain × (min(3, agreement) − 1) */
+  agreementMultiplier: number;
+  /** raw results that resolved to this one page */
+  merged: number;
+  /** 1 + 0.15 × (merged − 1) */
+  mergeMultiplier: number;
+  /** the final score the list was sorted by */
+  score: number;
 }
 
 export interface Source {
@@ -70,6 +133,14 @@ export interface Source {
   engines?: string[];
   /** IDF-weighted query coverage, 0-1 */
   relevance?: number;
+  /** the components of `relevance_score`, so the panel can show why this row ranked here */
+  score_terms?: ScoreTerms;
+  /**
+   * true when the coverage pass, not the score, put this row in the list: its engine's best result
+   * fell below the score cut, and the quota kept it so every contributing engine is represented.
+   * Absent on rows saved before the flag was recorded — unknown, not "ranked on merit".
+   */
+  coverage_quota?: boolean;
   /** full page text, when this source was among the top results the function read */
   content?: string;
   /** which extractor read the page: 'fetch' or 'firecrawl' */

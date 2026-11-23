@@ -244,6 +244,113 @@ const badges = (html) => (html.match(/<span[^>]*class="[^"]*rounded border[^"]*"
   check('pressing the selected card clears it', clear[0] === null, String(clear[0]));
 }
 
+// 12. the per-source breakdown: the factors behind the score, and the rows the quota placed
+{
+  const terms = {
+    engine: 'exa',
+    lane: 'exa',
+    weight: 1.2,
+    rank: 2,
+    k: 60,
+    rankTerm: 1.2 / 63,
+    coverage: 0.9,
+    exponent: 1.5,
+    freshness: 0,
+    freshnessMultiplier: 1,
+    agreement: 2,
+    agreementMultiplier: 1.02,
+    merged: 2,
+    mergeMultiplier: 1.15,
+    score: 0.0328,
+  };
+  const explained = card({ score_terms: terms, relevance_score: terms.score });
+  const closed = render(explained);
+  check('a scored row offers the breakdown', /Why this rank/.test(closed));
+  check('the breakdown is closed until asked for', /aria-expanded="false"/.test(closed) && !closed.includes('Engine weight'));
+  check('the total stays on the badge row', /RRF 0\.0328/.test(closed));
+
+  const { act, create } = await import('react-test-renderer');
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const seenFocus = [];
+  let tree;
+  await act(async () => {
+    tree = create(
+      React.createElement(SourceCard, {
+        source: explained,
+        onFocusCitation: () => {
+          seenFocus.push('changed');
+        },
+      }),
+    );
+  });
+  const toggle = () => tree.root.findByProps({ 'data-score-breakdown': 'https://example.org/rrf' });
+  await act(async () => {
+    toggle().props.onClick({ stopPropagation: () => {} });
+  });
+  const open = JSON.stringify(tree.toJSON());
+  check('opening it lists every factor in the score', ['Engine weight', 'Rank term', 'Term coverage', 'Freshness', 'Agreement', 'Merged results', 'Final score'].every((label) => open.includes(label)), open.slice(0, 200));
+  check('the values are the terms, with the arithmetic shown', open.includes('×1.20') && open.includes('1.20 ÷ 63') && open.includes('0.90^1.5 = 0.854'), open.match(/1\.20[^"]*/)?.[0]);
+  check('the agreement and merge lifts are named separately', open.includes('×1.02') && open.includes('×1.15'));
+  check('the final row is the score on the card', open.includes('0.0328'));
+  check('pressing the disclosure does not select the citation', seenFocus.length === 0, seenFocus.join(','));
+
+  const legacy = render(card({ score_terms: undefined }));
+  check('a row saved before the terms says so instead of inventing them', /Why this rank/.test(legacy));
+  let legacyTree;
+  await act(async () => {
+    legacyTree = create(React.createElement(SourceCard, { source: card({ score_terms: undefined }) }));
+  });
+  await act(async () => {
+    legacyTree.root.findByProps({ 'data-score-breakdown': 'https://example.org/rrf' }).props.onClick({ stopPropagation: () => {} });
+  });
+  const legacyOpen = JSON.stringify(legacyTree.toJSON());
+  check('and names only the total it has', legacyOpen.includes('total score only') && !legacyOpen.includes('Engine weight'));
+
+  // a quota row saved before the terms existed still knows why it is here, and saying only "total
+  // score only" would leave the placement unexplained
+  const legacyQuotaTree = create(React.createElement(SourceCard, { source: card({ score_terms: undefined, coverage_quota: true }) }));
+  let legacyQuotaOpen = '';
+  await act(async () => {
+    legacyQuotaOpen = JSON.stringify(legacyQuotaTree.toJSON());
+  });
+  await act(async () => {
+    legacyQuotaTree.root.findByProps({ 'data-score-breakdown': 'https://example.org/rrf' }).props.onClick({ stopPropagation: () => {} });
+  });
+  const legacyQuotaExpanded = JSON.stringify(legacyQuotaTree.toJSON());
+  check(
+    'a quota row saved without components still explains its placement',
+    legacyQuotaExpanded.includes('total score only') && /scored below the cut/.test(legacyQuotaExpanded),
+    legacyQuotaOpen.slice(0, 120),
+  );
+
+  const quota = render(card({ score_terms: terms, coverage_quota: true }));
+  check('a row placed by the coverage quota is labelled on the card', /coverage quota/.test(quota));
+  check(
+    'the label says why it is here, not that it earned the slot',
+    /would otherwise be missing/.test(quota) && /not because its score reached the cut/.test(quota),
+    quota.match(/title="Kept by the coverage quota[^"]*"/)?.[0],
+  );
+
+  // the model's own extra searches: the chip strip under the answer names them, and the card says
+  // which one produced this row so the panel can be read without going back to the answer
+  const fromSearch = render(card({ found_by: 'surface code thresholds' }));
+  check(
+    'a row brought in by the model\'s own search names that search',
+    /via “surface code thresholds”/.test(fromSearch),
+    fromSearch.match(/via “[^<]*/)?.[0],
+  );
+  check(
+    'and says it was the model\'s search, not the question',
+    // rendered HTML escapes the apostrophe, so the assertion stops before it
+    /Brought in by the model/.test(fromSearch) && /not by the question you asked/.test(fromSearch),
+    fromSearch.match(/title="Brought in[^"]*"/)?.[0],
+  );
+  check('a row from the question itself carries no origin chip', !/via “/.test(render(card())));
+
+  const none = render(card({ relevance_score: 0, score_terms: undefined }));
+  check('a row with nothing to explain offers no breakdown', !/Why this rank/.test(none));
+}
+
 const failed = results.filter((row) => !row.ok);
 console.log(`\n${results.length - failed.length}/${results.length} assertions passed`);
 if (failed.length) process.exit(1);

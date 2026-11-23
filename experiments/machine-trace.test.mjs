@@ -15,7 +15,7 @@ if (!process.env.BUBBLE_MODULE) {
   ]);
 }
 
-const { readInFull, parseSearchYields, parseToolSearches, promptCoverage, summarizeMachine, usedSources } = await import(asUrl(LIB));
+const { readInFull, parseSearchYields, parseQueries, promptCoverage, promptView, summarizeMachine, usedSources, modelSearchOrigin } = await import(asUrl(LIB));
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -101,15 +101,15 @@ const source = (citation, title, extra = {}) => ({
 
 // ── 2. the model's own searches ─────────────────────────────────────────────
 {
-  check('an array of queries is read as-is', parseToolSearches(['a', 'b']).join('|') === 'a|b');
-  check('the jsonb text form is read too', parseToolSearches('["a","b"]').join('|') === 'a|b');
-  check('nothing recorded is an empty list', parseToolSearches(null).length === 0 && parseToolSearches(undefined).length === 0);
-  check('an empty string is an empty list', parseToolSearches('  ').length === 0);
-  check('broken JSON is an empty list, not a throw', parseToolSearches('["a",').length === 0);
-  check('a non-array is an empty list', parseToolSearches({ query: 'a' }).length === 0);
-  check('duplicates collapse, case-insensitively', parseToolSearches(['RRF benchmark', 'rrf benchmark']).length === 1);
-  check('whitespace is normalised', parseToolSearches(['  rrf   benchmark  '])[0] === 'rrf benchmark');
-  check('empty and non-string entries are dropped', parseToolSearches(['', '  ', 7, null, 'real']).join('|') === 'real');
+  check('an array of queries is read as-is', parseQueries(['a', 'b']).join('|') === 'a|b');
+  check('the jsonb text form is read too', parseQueries('["a","b"]').join('|') === 'a|b');
+  check('nothing recorded is an empty list', parseQueries(null).length === 0 && parseQueries(undefined).length === 0);
+  check('an empty string is an empty list', parseQueries('  ').length === 0);
+  check('broken JSON is an empty list, not a throw', parseQueries('["a",').length === 0);
+  check('a non-array is an empty list', parseQueries({ query: 'a' }).length === 0);
+  check('duplicates collapse, case-insensitively', parseQueries(['RRF benchmark', 'rrf benchmark']).length === 1);
+  check('whitespace is normalised', parseQueries(['  rrf   benchmark  '])[0] === 'rrf benchmark');
+  check('empty and non-string entries are dropped', parseQueries(['', '  ', 7, null, 'real']).join('|') === 'real');
 }
 
 // ── 3. what the strip decides to show ─────────────────────────────────────
@@ -157,13 +157,56 @@ const source = (citation, title, extra = {}) => ({
   check('a row written before the mark claims nothing', unmarked.given === null && unmarked.panelOnly === 0 && unmarked.anything === false);
 }
 
+// ── 3c. the prompt read back out of the answer ──────────────────────────────
+{
+  const page = 'alpha '.repeat(2000); // 12,000 characters: more than any prompt carries
+  const view = promptView({
+    queries_used: '["compiled a","compiled b"]',
+    search_results: [
+      source('[1]', 'Carried page', {
+        content: page,
+        in_prompt: true,
+        prompt_reason: 'trimmed',
+        prompt_chars: 100,
+        content_source: 'fetch',
+      }),
+      source('[2]', 'Snippet carried', { in_prompt: true, prompt_reason: 'given' }),
+      source('[3]', 'Over the cap', { content: 'page', in_prompt: false, prompt_reason: 'capped' }),
+      source('[4]', 'No prompt', { content: 'page', in_prompt: false, prompt_reason: 'no-prompt' }),
+    ],
+  });
+  check('the compiled queries are read back', view.asked.join('|') === 'compiled a|compiled b', view.asked.join('|'));
+  check('carried sources keep prompt order', view.carried.map((entry) => entry.title).join('|') === 'Carried page|Snippet carried');
+  check('left-out sources keep rank order', view.leftOut.map((entry) => entry.title).join('|') === 'Over the cap|No prompt');
+  check(
+    'a cut page says how much was carried and how much there was',
+    view.carried[0].carried > 0 && view.carried[0].stored === page.trim().length && view.carried[0].truncated,
+    `${view.carried[0].carried}/${view.carried[0].stored}`,
+  );
+  check('a snippet carries no page text', view.carried[1].carried === 0 && view.carried[1].text === '');
+  check('the total is what the prompt carried', view.characters === view.carried[0].carried, String(view.characters));
+  check(
+    'the reasons travel with the left-out rows',
+    view.leftOut[0].reason === 'capped' && view.leftOut[1].reason === 'no-prompt',
+  );
+  check('the cut count is the truncated count', view.truncated === 1 && view.anything === true);
+
+  const legacy = promptView({ search_results: [source('[1]', 'Old row', { content: 'page text' })] });
+  check(
+    'an unmarked row claims no omission',
+    legacy.coverageRecorded === false && legacy.leftOut.length === 0 && legacy.carried.length === 1,
+  );
+  check('and records no query', legacy.asked.length === 0);
+  check('a row with no sources has nothing to show', promptView({ search_results: [] }).anything === false);
+}
+
 // ── 4. the strip in the bubble ────────────────────────────────────────────
 {
   const React = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { MessageBubble } = await import(asUrl(BUBBLE));
 
-  const message = (content, searchResults, toolSearches) => ({
+  const message = (content, searchResults, toolSearches, queries = []) => ({
     id: 'm1',
     conversation_id: 'c1',
     role: 'assistant',
@@ -171,6 +214,7 @@ const source = (citation, title, extra = {}) => ({
     model: 'Qwen/Qwen2.5-7B-Instruct',
     search_enabled: true,
     search_results: searchResults,
+    queries_used: queries,
     tool_searches: toolSearches,
     created_at: new Date().toISOString(),
   });
@@ -179,8 +223,16 @@ const source = (citation, title, extra = {}) => ({
     React.createElement(MessageBubble, {
       message: message(
         'The paper reports an nDCG of 0.42 [1].',
-        [source('[1]', 'Read in full paper', { content: 'an ndcg of 0.42', content_source: 'fetch' })],
+        [
+          source('[1]', 'Read in full paper', {
+            content: 'an ndcg of 0.42',
+            content_source: 'fetch',
+            in_prompt: true,
+            prompt_reason: 'given',
+          }),
+        ],
         ['rrf benchmark numbers'],
+        ['what is the nDCG'],
       ),
       isStreaming: false,
       query: 'what is the nDCG',
@@ -188,11 +240,21 @@ const source = (citation, title, extra = {}) => ({
     }),
   );
 
-  check('the strip says what was read in full', html.includes('Read in full'));
-  check('and names the source', html.includes('Read in full paper') && html.includes('[1]'));
-  check('the read entry is a control', /<button[^>]*data-read="https:\/\/a\.test\/1"/.test(html), 'read entry');
-  check('the entry shows the length the prompt carried', /font-mono text-text-muted">15<\/span>/.test(html), 'entry length');
-  check('the entry says which extractor read it', /Open the page text[^"]*read by fetch/.test(html), 'entry title');
+  check('the view is the prompt behind the answer', html.includes('What the model read'), 'view title');
+  check(
+    'it starts with the question as the search sent it',
+    html.includes('Asked as') && html.includes('what is the nDCG') && html.includes('sent as typed'),
+    'asked-as line',
+  );
+  check('then the sources in prompt order', html.includes('In the prompt') && html.includes('Read in full paper'));
+  check('the source row is a control', /<button[^>]*data-prompt-source="https:\/\/a\.test\/1"/.test(html), 'prompt row');
+  check(
+    'the summary says how many characters the prompt carried',
+    // the count is wrapped in its own span so a narrow line cannot break it, so compare the text
+    html.replace(/<[^>]*>/g, '').includes('1 of 1 source reached the prompt · 15 chars carried'),
+    html.slice(0, 240),
+  );
+  check('the row says which extractor read it', html.includes('>fetch<'), 'extractor');
   check('the text stays closed until it is asked for', !html.includes('exactly as the model read it'));
   check('the strip says what the model searched', html.includes('Searched again') && html.includes('rrf benchmark numbers'));
   check(
@@ -211,9 +273,54 @@ const source = (citation, title, extra = {}) => ({
       onRetrySearch: () => {},
     }),
   );
-  check('a snippet-only answer shows no read-in-full strip', !plain.includes('Read in full'));
+  check('a snippet-only answer still shows what it read', plain.includes('What the model read') && plain.includes('snippet only'));
   check('and no searched-again strip', !plain.includes('Searched again'));
-  check('and no prompt-coverage line when the row carries no marks', !plain.includes('Given to the model'));
+  check(
+    'a row with no prompt marks claims no omission',
+    !plain.includes('Never reached the prompt') && plain.includes('Stored with this answer'),
+    plain.slice(0, 240),
+  );
+
+  const long = 'word '.repeat(1200);
+  const compiledView = renderToStaticMarkup(
+    React.createElement(MessageBubble, {
+      message: message(
+        'An answer from a long page [1] and a page it never saw [2].',
+        [
+          source('[1]', 'Long supplied page', {
+            content: long,
+            in_prompt: true,
+            prompt_reason: 'trimmed',
+            prompt_chars: 200,
+          }),
+          source('[2]', 'Panel only page', { content: 'other text', in_prompt: false, prompt_reason: 'capped' }),
+        ],
+        [],
+        ['first rewritten query', 'second rewritten query'],
+      ),
+      isStreaming: false,
+      query: 'the original question',
+    }),
+  );
+  check(
+    'a rewritten question names every query the compiler sent',
+    compiledView.includes('compiler rewrote') &&
+      compiledView.includes('first rewritten query') &&
+      compiledView.includes('second rewritten query'),
+    'compiled queries',
+  );
+  check(
+    'a cut page shows where the prompt stopped and how long the page was',
+    compiledView.includes('of 5,999') && compiledView.includes('1 cut'),
+    'truncation',
+  );
+  check(
+    'a source that never reached the prompt is listed with its reason',
+    compiledView.includes('Never reached the prompt') &&
+      compiledView.includes('Panel only page') &&
+      compiledView.includes('over the follow-up cap'),
+    'left out',
+  );
 
   const withheld = renderToStaticMarkup(
     React.createElement(MessageBubble, {
@@ -221,7 +328,7 @@ const source = (citation, title, extra = {}) => ({
         'An answer that used only its first source [1].',
         [
           source('[1]', 'Given', { in_prompt: true }),
-          source('[2]', 'Panel only', { in_prompt: false }),
+          source('[2]', 'Panel only', { in_prompt: false, prompt_reason: 'capped' }),
         ],
         [],
       ),
@@ -231,10 +338,13 @@ const source = (citation, title, extra = {}) => ({
     }),
   );
   check(
-    'the strip says how many fused sources the prompt carried',
-    withheld.includes('Given to the model') && withheld.includes('1 of 2') && withheld.includes('1 panel-only'),
-    withheld.slice(0, 200),
+    'a source the prompt never carried is named, with the reason',
+    withheld.includes('Never reached the prompt') &&
+      withheld.includes('Panel only') &&
+      withheld.includes('over the follow-up cap'),
+    withheld.slice(0, 240),
   );
+  check('and the summary counts it', withheld.includes('1 never reached'));
 
   /** A rendered answer, so each freshness case states only its dates and its query. */
   const answer = (content, searchResults, query) =>
@@ -372,7 +482,7 @@ const source = (citation, title, extra = {}) => ({
     const shown = () => text(tree.toJSON());
 
     check('the page text is not on screen before a click', !shown().includes('an ndcg of 0.42'));
-    const chip = nodes().find((node) => node.type === 'button' && node.props['data-read']);
+    const chip = nodes().find((node) => node.type === 'button' && node.props['data-prompt-source']);
     check('the read entry is mounted as a control', Boolean(chip));
     await renderer.act(async () => {
       chip.props.onClick();
@@ -426,6 +536,34 @@ const source = (citation, title, extra = {}) => ({
 
   const untouched = promptCoverage([{ search_results: [source('[1]', 'unmarked')] }]);
   check('a conversation with no marks yields nothing to claim', untouched.size === 0, String(untouched.size));
+}
+
+// a stored row records the query that returned it; when that query is one the model ran itself,
+// the Sources panel can name the search behind the row
+{
+  const searches = ['surface code thresholds', 'reciprocal rank fusion'];
+  check(
+    'a stored row names the model search that produced it',
+    modelSearchOrigin('surface code thresholds', searches) === 'surface code thresholds',
+  );
+  check(
+    'the question that opened the turn is not an origin',
+    modelSearchOrigin('how do surface codes scale?', searches) === null,
+  );
+  check(
+    'a row with no query names no origin',
+    modelSearchOrigin(undefined, searches) === null && modelSearchOrigin('   ', searches) === null,
+  );
+}
+
+// the strip marks a dork as a dork: the flag travels in the recorded yield, not the query text
+{
+  const yields = parseSearchYields([
+    { query: 'site:example.org filetype:pdf', found: 2, added: 1, dork: true },
+    { query: 'surface code thresholds', found: 4, added: 2 },
+  ]);
+  check('a dork run keeps its flag through the stored row', yields['site:example.org filetype:pdf']?.dork === true);
+  check('a plain extra search is not marked as a dork', yields['surface code thresholds']?.dork === undefined);
 }
 
 const failed = results.filter((row) => !row.ok);

@@ -137,6 +137,23 @@ const page = (citation, text) => ({ citation_id: citation, title: `Source ${cita
   );
   check('a grounded answer reads as a clean bill', /All 1 checked sentence matches its source/.test(cleanHtml));
 
+  // the verdict steers the derived questions: a figure no cited page carries becomes a question for
+  // the page that does, even on a post with no claim ledger (this one has none)
+  const unsourcedHtml = renderToStaticMarkup(
+    React.createElement(MessageBubble, {
+      message: message('Surface code thresholds above 1% error are binding [1]. The gain was 47% in the test.', [
+        page('[1]', 'Surface code thresholds matter at 1% error on the test split.'),
+      ]),
+      isStreaming: false,
+      query: 'are surface code thresholds binding',
+    }),
+  );
+  check(
+    'the bubble asks for the page carrying an unsourced figure',
+    /Which page carries 47% on surface code thresholds\?/.test(unsourcedHtml),
+    'no claim ledger in this answer',
+  );
+
   const quietHtml = renderToStaticMarkup(
     React.createElement(MessageBubble, {
       message: message('This matters for the field.', []),

@@ -24,6 +24,11 @@ interface ChatAreaProps {
   presetName: string;
   onSearch: (query: string) => void;
   onRunLane?: (lane: string, target: string) => void;
+  /** a dork pressed in an answer, on its way into the composer */
+  onUseDork?: (query: string) => void;
+  /** that dork, waiting for the composer to take it */
+  draftQuery?: string | null;
+  onDraftUsed?: () => void;
   searchLabel?: string;
   /** engines that could not answer, shown so an empty result list explains itself */
   engineIssues?: EngineIssue[];
@@ -59,6 +64,8 @@ interface ChatAreaProps {
   onRetryTurn?: (query: string) => void;
   onSaveResults?: (query: string, results: Source[]) => Promise<number>;
   onFollowUp?: (question: string) => void;
+  /** record whether an answer met the question — the one usefulness signal the app stores */
+  onUsefulness?: (messageId: string, useful: boolean) => Promise<void>;
   /** what answered, when it was not the selected model — shown above the transcript, not only logged */
   modelNotice?: ModelNotice | null;
   onDismissModelNotice?: () => void;
@@ -74,6 +81,9 @@ export function ChatArea({
   presetName,
   onSearch,
   onRunLane,
+  onUseDork,
+  draftQuery,
+  onDraftUsed,
   searchLabel,
   engineIssues,
   laneYield,
@@ -99,6 +109,7 @@ export function ChatArea({
   onCitationFocus,
   onSaveResults,
   onFollowUp,
+  onUsefulness,
   modelNotice,
   onDismissModelNotice,
 }: ChatAreaProps) {
@@ -112,11 +123,11 @@ export function ChatArea({
   return (
     <div className="flex h-full flex-col">
       {modelNotice && <ModelNoticeBanner notice={modelNotice} onDismiss={onDismissModelNotice} />}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         {messages.length === 0 ? (
           <WelcomeScreen onSendMessage={onSendMessage} />
         ) : (
-          <div className="mx-auto max-w-3xl px-6 py-6">
+          <div className="mx-auto w-full max-w-[52rem] px-5 py-6 sm:px-8">
             {messages.map((msg, index) => {
               const asked = [...messages.slice(0, index)].reverse().find((entry) => entry.role === 'user');
               return (
@@ -133,14 +144,16 @@ export function ChatArea({
                   onRetryTurn={onRetryTurn}
                   onSaveResults={onSaveResults}
                   onFollowUp={onFollowUp}
+                  onUsefulness={onUsefulness ? (useful) => onUsefulness(msg.id, useful) : undefined}
                   onRunLane={onRunLane}
+                  onUseDork={onUseDork}
                   focusedCitation={msg.id === newestAnswerId ? focusedCitation : undefined}
                   onCitationFocus={msg.id === newestAnswerId ? onCitationFocus : undefined}
                 />
               );
             })}
             {isSearching && (
-              <div className="mb-4 flex items-center gap-2 rounded-lg border border-olive/30 bg-olive-subtle px-4 py-2.5 text-xs text-olive animate-fade-in">
+              <div className="mb-4 flex w-fit items-center gap-2 rounded-full border border-olive/25 bg-olive-subtle px-3.5 py-1.5 text-[11px] text-olive animate-fade-in">
                 <Loader2 size={14} className="animate-spin" />
                 <span>{searchLabel || 'Searching the web for this answer…'}</span>
               </div>
@@ -150,8 +163,8 @@ export function ChatArea({
         )}
       </div>
 
-      <div className="border-t border-border-subtle bg-bg-surface px-6 py-4">
-        <div className="mx-auto max-w-3xl">
+      <div className="border-t border-border-subtle/70 bg-bg-surface px-4 pb-3 pt-3 sm:px-6">
+        <div className="mx-auto max-w-[52rem]">
           <SearchBar
             onSearch={onSearch}
             onRunLane={onRunLane}
@@ -168,6 +181,8 @@ export function ChatArea({
             issues={engineIssues}
             deploymentSecrets={deploymentKeyNames ?? null}
             promptStatus={promptStatus}
+            draftQuery={draftQuery}
+            onDraftUsed={onDraftUsed}
           />
           <EngineKeyRow
             engines={engines}

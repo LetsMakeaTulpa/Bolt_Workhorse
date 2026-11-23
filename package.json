@@ -15,6 +15,8 @@
     "engines:verify": "node scripts/verify-engines.mjs",
     "migrations:verify": "node scripts/verify-migrations.mjs",
     "migrations:check": "node scripts/apply-migrations.mjs --check",
+    "functions:check": "node scripts/probe-functions.mjs",
+    "rls:check": "node scripts/probe-anon.mjs",
     "migrations:plan": "node scripts/apply-migrations.mjs --plan",
     "migrations:apply": "node scripts/apply-migrations.mjs"
   },

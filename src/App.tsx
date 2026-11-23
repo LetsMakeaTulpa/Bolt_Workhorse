@@ -4,7 +4,7 @@ import { useEngineKeys } from './hooks/useEngineKeys';
 import { supabase } from './lib/supabase';
 import { fetchModels, fallbackChain, DORK_TOOL, SEARCH_TOOL, streamTurn, type ChatStreamCallbacks } from './lib/api';
 import { runSearchToolLoop, type ToolMessage } from './lib/searchTool';
-import { DEFAULT_ENGINES, DORK_ENGINES, SEARCH_SCOPES } from './lib/engines';
+import { DEFAULT_ENGINES, SEARCH_SCOPES } from './lib/engines';
 import { describePromptVariant, readPromptVariant, systemPromptFor } from './lib/promptVariant';
 import { buildGapReport } from './lib/emptyResult';
 import type {
@@ -27,16 +27,26 @@ import type { Session } from '@supabase/supabase-js';
 import { Menu, Settings, Search, Compass, PanelRightClose, PanelRight, Activity, Globe, Shield, Radar, LogOut, Loader2 } from 'lucide-react';
 import { decideAfterSearch, STOPPED_SEARCH_NOTE, SUPERSEDED_SEARCH_NOTE } from './lib/turnDecision';
 import { reuseForRetry } from './lib/reuseSources';
-import { insertRowTolerant, noteDroppedColumns } from './lib/messageInsert';
+import { insertRowTolerant, noteDroppedColumns, retryLinkFor, updateRowTolerant } from './lib/messageInsert';
+import { runToolSearch as executeToolSearch } from './lib/toolSearch';
+import type { RunRecord } from './lib/runRecord';
 
 const DEFAULT_MODEL = 'xortron/RESTRICTED-RESEARCH-MODEL';
 
 /** Appended to an answer the user stopped mid-stream: the row must never read as finished prose. */
 const STOPPED_NOTE = '_(Stopped before completion — this is a partial answer.)_';
 
+/**
+ * Said once per session when the run store is missing or refusing writes. Per session rather than
+ * per run: a warning on every search would bury the transcript it is describing.
+ */
+let runStoreWarned = false;
+
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
+  /** the conversation this client just created for the turn it is about to send */
+  const skipInitialLoadRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
@@ -50,6 +60,8 @@ export default function App() {
   /** the in-flight completion; stopping or replacing a run must stop the model too */
   const streamRunRef = useRef<AbortController | null>(null);
   const [useDorks, setUseDorks] = useState(false);
+  /** a dork pressed in an answer, handed to the composer; null when nothing is waiting */
+  const [dorkDraft, setDorkDraft] = useState<string | null>(null);
   const [rawSearchOnly, setRawSearchOnly] = useState(false);
   const [findings, setFindings] = useState<Finding[]>([]);
   // where the panel was left last time: a collapsed panel that reopens on every reload is a panel
@@ -118,7 +130,11 @@ export default function App() {
 
   useEffect(() => {
     if (currentConversation) {
-      loadMessages(currentConversation.id);
+      // A conversation created for the question in flight has no rows to load yet. Fetching it here
+      // raced the user-row insert: an empty answer wiped the question from the transcript, and with
+      // it the `query` the answer needs for its freshness receipt.
+      if (skipInitialLoadRef.current === currentConversation.id) skipInitialLoadRef.current = null;
+      else loadMessages(currentConversation.id);
       loadActivityLogs(currentConversation.id);
       loadSources(currentConversation.id);
       setSelectedModel(currentConversation.model);
@@ -145,7 +161,10 @@ export default function App() {
       .from('messages').select('*')
       .eq('conversation_id', conversationId)
       .order('created_at', { ascending: true });
-    if (data) setMessages(data as Message[]);
+    if (data) {
+      for (const row of data as Message[]) persistedIds.current.add(row.id);
+      setMessages(data as Message[]);
+    }
   };
 
   const loadFindings = async () => {
@@ -242,6 +261,12 @@ export default function App() {
       publication_date: r.published ?? '',
       relevance_score: r.relevance_score ?? 0,
       citation_id: r.citation_id ?? `[${i + 1}]`,
+      // the score's components travel with the row, so the panel can still explain the order after
+      // a reload, when only the stored rows exist
+      metadata: {
+        ...(r.score_terms ? { score_terms: r.score_terms } : {}),
+        ...(r.coverage_quota ? { coverage_quota: true } : {}),
+      },
       // the row records whether this source came back with page text or only a snippet
       extraction_status: r.content ? 'extracted' : 'pending',
       source_type: r.source_engine === 'arxiv' || r.source_engine === 'openalex' ? 'academic' : 'web',
@@ -254,6 +279,14 @@ export default function App() {
 
   /** the newest question owns the transcript; an older turn steps aside instead of answering over it */
   const turnRef = useRef(0);
+
+  /**
+   * Ids whose rows the database accepted, loaded or inserted this session.
+   *
+   * `messages.retry_of` is a foreign key to `messages(id)` and each row is saved under the id the
+   * transcript renders, so a link is written when — and only when — its target is really in the table.
+   */
+  const persistedIds = useRef<Set<string>>(new Set());
 
   /** Collapse or open the panel, and remember the choice on this device. */
   const setPanelOpen = useCallback((open: boolean) => {
@@ -269,6 +302,29 @@ export default function App() {
     refresh: refreshKeyNames,
   } = useEngineKeys(session?.user?.id);
 
+  /**
+   * Keep the per-lane lists of a run.
+   *
+   * A run that cannot be stored must not fail the search that produced it, so this warns once per
+   * session instead of throwing: the answers are still on screen, and the gap is named rather than
+   * hidden behind a working search.
+   */
+  const saveSearchRun = async (conversationId: string, run: RunRecord) => {
+    const { error } = await supabase.from('search_runs').insert({
+      conversation_id: conversationId,
+      query: run.query,
+      kind: run.kind,
+      engines: run.engines,
+      queries_used: run.queries,
+      lanes: run.lanes,
+      lanes_hash: run.lanesHash,
+    });
+    if (error && !runStoreWarned) {
+      runStoreWarned = true;
+      console.warn(`[fieldwork] search runs are not being stored: ${error.message} (apply the pending migration)`);
+    }
+  };
+
   const {
     results: searchResults,
     isSearching,
@@ -278,6 +334,7 @@ export default function App() {
     relaxedGate,
     forcedRecency,
     queriesUsed,
+    lastQueries,
     lastQuery: lastSearchQuery,
     performSearch,
     cancelSearch: cancelSearchRun,
@@ -294,6 +351,7 @@ export default function App() {
     logActivity,
     ensureConversation: ensureSearchConversation,
     saveSources: saveSearchSources,
+    saveRun: saveSearchRun,
     abortStream,
     closeActivity,
   });
@@ -319,10 +377,14 @@ export default function App() {
     const turnId = turnRef.current + 1;
     turnRef.current = turnId;
     const turnSuperseded = () => turnRef.current !== turnId;
+    // A link to a row that was never saved is rejected by the foreign key, and the question would be
+    // lost with it; only an id the database accepted is named.
+    const retryOf = retryLinkFor(options?.retryOf, persistedIds.current);
 
     let conv = currentConversation;
     if (!conv) {
       conv = await createConversation();
+      skipInitialLoadRef.current = conv.id;
       setCurrentConversation(conv);
     }
 
@@ -334,19 +396,32 @@ export default function App() {
       search_enabled: shouldSearch,
       search_results: [],
       // a retried turn says which attempt it replaces, so the transcript can link the two
-      retry_of: options?.retryOf ?? null,
+      retry_of: retryOf,
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userMsg]);
 
-    // tolerant, like the answers: a database without the column keeps the question and the retry
-    await insertRowTolerant<Message>(supabase, 'messages', {
+    // Tolerant, like the answers: a database without the column keeps the question and the retry.
+    // The row keeps the id the transcript already renders, so the link names a real row and both
+    // anchors still match after a reload.
+    const savedQuestion = await insertRowTolerant<Message>(supabase, 'messages', {
+      id: userMsg.id,
       conversation_id: conv.id,
       role: 'user',
       content,
       search_enabled: shouldSearch,
-      retry_of: options?.retryOf ?? null,
+      retry_of: retryOf,
     });
+    if (!savedQuestion.error) persistedIds.current.add(userMsg.id);
+    // A database without `retry_of` keeps the question and drops the link, which would leave the
+    // transcript reading as a first attempt; say so in the trail instead of losing it quietly. A row
+    // that carried no link has nothing to report, so the column is only named when one was attempted.
+    await noteDroppedColumns(
+      retryOf ? savedQuestion.dropped : savedQuestion.dropped.filter((column) => column !== 'retry_of'),
+      async (message, detail) => {
+        await logActivity(conv.id, 'analyze', message, detail, 'completed');
+      },
+    );
 
     if (messages.length === 0) {
       const title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
@@ -355,6 +430,9 @@ export default function App() {
     }
 
     let searchResultsData: Source[] = [];
+    // the words the search really sent, kept with the answer so the transcript can show the prompt's
+    // question rather than the one on screen: empty when this turn ran no search
+    let compiledQueries: string[] = [];
     // Why this turn found nothing, kept for the transcript as well as the trail: the answer is
     // labelled unverified, and the gaps are the explanation that label leaves out.
     let gapLines: string[] = [];
@@ -372,6 +450,7 @@ export default function App() {
       );
     } else if (shouldSearch) {
       searchResultsData = await performSearch(content, conv.id);
+      compiledQueries = lastQueries();
       // A stopped or replaced search used to end the turn right here, with nothing under the
       // question: that reads as the app not answering at all, and it is what left people asking
       // whether the app had broken. Decide explicitly instead, and every outcome is visible:
@@ -410,7 +489,9 @@ export default function App() {
         // The note is the only record that this turn happened. Kept in memory alone, a reload put
         // the question back on screen with nothing under it and took the note's Retry with it —
         // the exact state this decision exists to prevent.
-        const { data: savedNote } = await insertRowTolerant<Message>(supabase, 'messages', {
+        // saved under the id on screen, so a retry of this note still resolves after a reload
+        const noteSave = await insertRowTolerant<Message>(supabase, 'messages', {
+          id: localId,
           conversation_id: conv.id,
           role: 'assistant',
           content: noteContent,
@@ -418,9 +499,7 @@ export default function App() {
           search_enabled: searchEnabled,
           search_results: [],
         });
-        if (savedNote?.id) {
-          setMessages((prev) => prev.map((m) => (m.id === localId ? { ...m, id: savedNote.id } : m)));
-        }
+        if (!noteSave.error) persistedIds.current.add(localId);
         return;
       }
       if (runAborted()) {
@@ -518,6 +597,7 @@ export default function App() {
       model: selectedModel,
       search_enabled: searchEnabled,
       search_results: storedResults(),
+      queries_used: compiledQueries,
       tool_searches: toolSearches,
       tool_search_yields: toolSearchYields,
       gaps: gapLines,
@@ -565,13 +645,16 @@ export default function App() {
         setIsStreaming(false);
         setStreamingContent('');
 
-        const { data: savedMsg, dropped } = await insertRowTolerant<Message>(supabase, 'messages', {
+        const { data: savedMsg, error: saveError, dropped } = await insertRowTolerant<Message>(supabase, 'messages', {
+          id: assistantMsgId,
           conversation_id: conv!.id, role: 'assistant', content: finalContent,
           model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
+          queries_used: compiledQueries,
           system_prompt: activePrompt, tool_searches: toolSearches,
           tool_search_yields: toolSearchYields,
           gaps: searchResultsData.length === 0 ? gapLines : [],
         });
+        if (!saveError) persistedIds.current.add(assistantMsgId);
         await noteDroppedColumns(dropped, async (message, detail) => {
           await logActivity(conv!.id, 'analyze', message, detail, 'completed');
         });
@@ -591,12 +674,25 @@ export default function App() {
 
         await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv!.id);
       },
-      onError: (error) => {
+      onError: async (error) => {
         setIsStreaming(false);
         setStreamingContent('');
         setMessages((prev) => prev.map((m) =>
           m.id === assistantMsgId ? { ...m, content: `Error: ${error}` } : m
         ));
+        // The failed answer keeps its Retry on screen, so the row is saved too: a retry links to the
+        // attempt it replaces, and a target that only ever existed in memory cannot be linked after a
+        // reload — the same reason the stopped answer is saved.
+        const failedSave = await insertRowTolerant<Message>(supabase, 'messages', {
+          id: assistantMsgId,
+          conversation_id: conv!.id, role: 'assistant', content: `Error: ${error}`,
+          model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
+          queries_used: compiledQueries,
+          system_prompt: activePrompt, tool_searches: toolSearches,
+          tool_search_yields: toolSearchYields,
+          gaps: searchResultsData.length === 0 ? gapLines : [],
+        });
+        if (!failedSave.error) persistedIds.current.add(assistantMsgId);
         setActivityLogs((prev) => prev.map((a) =>
           a.activity_type === 'synthesize' && a.status === 'running'
             ? { ...a, status: 'failed', description: `Synthesis failed: ${error}` }
@@ -615,13 +711,16 @@ export default function App() {
 
         // nothing streamed yet: a row that only says "stopped" would be noise in the transcript
         if (kept) {
-          const { dropped: stoppedDropped } = await insertRowTolerant<Message>(supabase, 'messages', {
+          const { error: stoppedError, dropped: stoppedDropped } = await insertRowTolerant<Message>(supabase, 'messages', {
+            id: assistantMsgId,
             conversation_id: conv!.id, role: 'assistant', content: stopped,
             model: effectiveModel, search_enabled: searchEnabled, search_results: storedResults(),
+            queries_used: compiledQueries,
             system_prompt: activePrompt, tool_searches: toolSearches,
             tool_search_yields: toolSearchYields,
             gaps: searchResultsData.length === 0 ? gapLines : [],
           });
+          if (!stoppedError) persistedIds.current.add(assistantMsgId);
           await noteDroppedColumns(stoppedDropped, async (message, detail) => {
             await logActivity(conv!.id, 'analyze', message, detail, 'completed');
           });
@@ -644,39 +743,31 @@ export default function App() {
     /**
      * Run one of the model's own searches and fold what it found into this answer's evidence.
      *
-     * A dork skips the query compiler — the operator is the request, and rewriting the query would
-     * drop the thing that was asked for — and stays on the engines that actually parse operators,
-     * since a dork sent to arXiv is a plain-text search that spends a budget slot for nothing.
+     * The two rules that shape a dork — no query compiler, operator-capable engines only — live in
+     * `runToolSearch` so they can be tested; this keeps only the state they act on.
      */
     const runToolSearch = async (query: string, options: { dork?: boolean } = {}) => {
-      if (!searchEnabled) {
-        return { count: 0, text: 'Search is switched off for this turn. Answer from what you have.' };
-      }
-      const dorkEngines = options.dork ? engines.filter((engine) => DORK_ENGINES.has(engine)) : null;
-      if (dorkEngines && dorkEngines.length === 0) {
-        return {
-          count: 0,
-          text: `No selected engine parses dork operators, so "${query}" would be a plain-text search. Answer with what you already have, or use search_web for a normal query.`,
-        };
-      }
-      // the sources this answer already holds, so "new" means new to the evidence, not new to the run
-      const known = new Set(searchResultsData.map((source) => source.url));
-      const found = await performSearch(query, conv!.id, {
-        keepStreaming: true,
-        compileQueries: !options.dork,
-        ...(dorkEngines ? { engines: dorkEngines } : {}),
+      const outcome = await executeToolSearch({
+        query,
+        dork: options.dork === true,
+        searchEnabled,
+        engines,
+        conversationId: conv!.id,
+        performSearch,
+        knownUrls: searchResultsData.map((source) => source.url),
       });
-      const added = found.filter((source) => !known.has(source.url)).length;
-      toolSearchYields = [...toolSearchYields, { query, found: found.length, added }];
+      // a refusal never ran a search, so there is nothing to record and nothing to offer
+      if (!outcome.yielded) return { count: 0, text: outcome.text };
+
+      toolSearchYields = [...toolSearchYields, outcome.yielded];
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsgId ? { ...m, tool_search_yields: toolSearchYields } : m)),
       );
-      if (found.length === 0) {
-        return { count: 0, text: `Search for "${query}" returned no usable sources. Answer with what you already have.` };
-      }
+      if (outcome.count === 0) return { count: 0, text: outcome.text };
+
       // the answer now has sources behind it: the bubble must stop saying otherwise, and the row
       // that gets saved must remember them
-      searchResultsData = [...searchResultsData, ...found];
+      searchResultsData = [...searchResultsData, ...outcome.offered, ...outcome.capped];
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantMsgId
@@ -687,11 +778,9 @@ export default function App() {
       );
       // only the first eight of a follow-up search reach the model; the rest are panel-only, and the
       // row says so: "beyond the cap" is a different omission from "nothing was ever prompted"
-      const offered = found.slice(0, 8);
-      for (const source of offered) inPrompt.set(source.url, FOLLOW_UP_CONTENT_CHARS);
-      for (const source of found.slice(8)) capped.add(source.url);
-      const block = formatSourceContext(offered, { contentChars: FOLLOW_UP_CONTENT_CHARS });
-      return { count: found.length, text: `Search results for "${query}":\n\n${block}` };
+      for (const source of outcome.offered) inPrompt.set(source.url, FOLLOW_UP_CONTENT_CHARS);
+      for (const source of outcome.capped) capped.add(source.url);
+      return { count: outcome.count, text: outcome.text };
     };
 
     // The model may search again when the first pass was thin. Each call runs the real engines and
@@ -869,6 +958,28 @@ export default function App() {
     return rows.length;
   };
 
+  /**
+   * Record whether the answer met the question.
+   *
+   * Relevance says a page matched the words; it never says the answer was worth having, so nothing
+   * scored the engine weights or the ranking cuts that produced it. This is that outcome, written
+   * to the answer row and read back beside the queries, the pages the prompt carried and their
+   * score terms. Applied locally first — a press must answer immediately — and rolled back when the
+   * write failed, because a verdict the database refused is not ground truth.
+   */
+  const handleUsefulness = async (messageId: string, useful: boolean) => {
+    const before = messages.find((m) => m.id === messageId)?.useful ?? null;
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, useful } : m)));
+    const { error, dropped } = await updateRowTolerant(supabase, 'messages', { id: messageId }, { useful });
+    if (!error) return;
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, useful: before } : m)));
+    throw new Error(
+      dropped.length > 0
+        ? `messages.${dropped.join(', messages.')} is not in the database yet (apply the pending migration)`
+        : (error.message ?? 'the update was refused'),
+    );
+  };
+
   /** Raw mode: gather, fuse and save sources, then stop without touching the model. */
   const handleRawSearch = async (query: string) => {
     const clean = query.trim();
@@ -938,8 +1049,8 @@ export default function App() {
         />
       )}
 
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between border-b border-border-subtle bg-bg-surface px-4 py-2.5">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex items-center justify-between gap-2 px-4 py-2.5">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setShowSidebar(!showSidebar)}
@@ -1005,8 +1116,9 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-hidden">
+        {/* The work sits in one inset window: a panel of page, not a full-bleed control room. */}
+        <div className="flex flex-1 gap-2 overflow-hidden px-2 pb-2">
+          <div className="flex min-w-0 flex-1 overflow-hidden rounded-xl border border-border-subtle bg-bg-surface/40">
             <ChatArea
               messages={messages}
               isStreaming={isStreaming}
@@ -1018,6 +1130,9 @@ export default function App() {
               presetName={selectedPreset}
               onSearch={handleComposerSend}
               onRunLane={handleRunLane}
+              onUseDork={setDorkDraft}
+              draftQuery={dorkDraft}
+              onDraftUsed={() => setDorkDraft(null)}
               onCancelSearch={cancelSearch}
               storedKeyNames={storedKeyNames}
               deploymentKeyNames={deploymentKeyNames}
@@ -1044,6 +1159,7 @@ export default function App() {
               onRetryTurn={handleRetryTurn}
               onSaveResults={handleSaveResults}
               onFollowUp={handleSendMessage}
+              onUsefulness={handleUsefulness}
               modelNotice={modelNotice}
               onDismissModelNotice={() => setModelNotice(null)}
             />
@@ -1055,6 +1171,9 @@ export default function App() {
               // which panel rows the model actually read, taken from the saved answers: the panel's
               // own source rows predate the prompt and cannot know
               promptCoverage={promptCoverage(messages)}
+              // which stored rows were brought in by a search the model ran itself, so the panel can
+              // say so without sending the reader back to the chip strip under the answer
+              modelSearches={[...new Set(messages.flatMap((m) => m.tool_searches ?? []))]}
               // the last run weighted dates regardless of intent, so a card must not say it ignored them
               forcedRecency={forcedRecency}
               // a rewritten question is shown with the words that were really sent, and each is runnable
@@ -1082,7 +1201,7 @@ export default function App() {
               onCollapse={() => setPanelOpen(false)}
             />
           ) : (
-            <aside className="flex w-11 flex-col items-center gap-1 border-l border-border-subtle bg-bg-deep py-2">
+            <aside className="flex w-11 flex-col items-center gap-1 overflow-hidden rounded-xl border border-border-subtle bg-bg-deep py-2">
               <button
                 onClick={() => setPanelOpen(true)}
                 className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"

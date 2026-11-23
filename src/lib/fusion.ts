@@ -1,4 +1,4 @@
-import type { Source } from '../types';
+import type { ScoreTerms, Source } from '../types';
 
 /**
  * Multi-engine fusion.
@@ -353,6 +353,39 @@ export function termCoverage(query: string, item: Source, df: Map<string, number
   return available ? Math.min(1, matched / available) : 0;
 }
 
+/**
+ * The arithmetic behind one entity's score, read back out of the member that produced its base.
+ *
+ * A merged source scores as its best member, lifted by agreement and by merging — so the breakdown
+ * names that member's lane and rank and keeps every lift as its own multiplier. The product of the
+ * terms is the score the list was sorted by, which is what lets the panel's explanation be checked
+ * against the number on the card rather than merely believed.
+ */
+function scoreTermsFor(
+  entity: Entity,
+  gains: { k: number; relevanceExponent: number; recencyGain: number; agreement: number },
+): ScoreTerms {
+  const member = entity.members.reduce((best, item) => (item.score > best.score ? item : best), entity.members[0]);
+  const corroboration = Math.min(3, entity.engines.size);
+  return {
+    engine: member.engine.split('·')[0],
+    lane: member.engine,
+    weight: member.weight,
+    rank: member.rank,
+    k: gains.k,
+    rankTerm: member.weight / (gains.k + member.rank + 1),
+    coverage: member.rel,
+    exponent: gains.relevanceExponent,
+    freshness: member.recency,
+    freshnessMultiplier: 1 + gains.recencyGain * member.recency,
+    agreement: entity.engines.size,
+    agreementMultiplier: 1 + gains.agreement * (corroboration - 1),
+    merged: entity.members.length,
+    mergeMultiplier: 1 + 0.15 * (entity.members.length - 1),
+    score: entity.score,
+  };
+}
+
 function resolveEntities(items: Candidate[]): Entity[] {
   const entities: Entity[] = [];
   for (const item of items) {
@@ -596,6 +629,9 @@ export function fuseResultsDetailed(
     entity.score = base * (1 + agreement * (corroboration - 1)) * (1 + 0.15 * (entity.members.length - 1));
   }
   entities.sort((a, b) => b.score - a.score);
+  // where each entity fell by score alone, so the coverage pass can say which slots it created
+  const scorePosition = new Map<Entity, number>();
+  entities.forEach((entity, index) => scorePosition.set(entity, index + 1));
 
   const chosen: Entity[] = [];
   const chosenKeys = new Set<string>();
@@ -612,11 +648,16 @@ export function fuseResultsDetailed(
     return true;
   };
 
-  // coverage pass: guarantee every contributing engine appears before score-filling
+  // coverage pass: guarantee every contributing engine appears before score-filling. A row only
+  // needs the quota when the score fill would not have reached it, and only that case is labelled:
+  // the top engine's best result is in on merit even though the same pass placed it.
+  const quotaPlaced = new Set<Entity>();
   for (const engine of Object.keys(lists)) {
     if (chosen.length >= limit) break;
     const entity = entities.find((candidate) => !chosen.includes(candidate) && candidate.engines.has(engine));
-    if (entity) take(entity);
+    if (!entity) continue;
+    const placed = take(entity);
+    if (placed && (scorePosition.get(entity) ?? 0) > limit) quotaPlaced.add(entity);
   }
   for (const entity of entities) {
     if (chosen.length >= limit) break;
@@ -651,6 +692,9 @@ export function fuseResultsDetailed(
       engines,
       relevance: Number(entity.rel.toFixed(3)),
       relevance_score: entity.score,
+      // the terms that produced that score, kept with the row so the panel can explain it
+      score_terms: scoreTermsFor(entity, { k, relevanceExponent, recencyGain, agreement }),
+      ...(quotaPlaced.has(entity) ? { coverage_quota: true } : {}),
       source_engine: engines.join('+'),
       snippet: mergedSnippet ?? entity.rep.snippet,
       ...(mergedContent ?? entity.rep.content ? { content: mergedContent ?? entity.rep.content } : {}),

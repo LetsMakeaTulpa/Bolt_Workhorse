@@ -48,6 +48,20 @@ export function resetLearntColumns(): void {
 }
 
 /**
+ * The value to write into `messages.retry_of`.
+ *
+ * The column is a foreign key to `messages(id)`, and a message is now saved under the id the
+ * transcript renders, so a link is valid exactly when that row's insert was accepted. Naming a row
+ * that was never saved would have the whole insert rejected — and take the new question with it.
+ */
+export function retryLinkFor(
+  retryOf: string | null | undefined,
+  persisted: { has(id: string): boolean },
+): string | null {
+  return retryOf && persisted.has(retryOf) ? retryOf : null;
+}
+
+/**
  * Insert one row into a table, retrying without any column the server reports as missing.
  * Returns the saved row (when `select` is asked for) and the names of anything dropped.
  */
@@ -55,7 +69,9 @@ export async function insertRowTolerant<T>(
   client: SupabaseClient,
   table: string,
   row: Record<string, unknown>,
-  { select = true, maxDrops = 4 }: { select?: boolean; maxDrops?: number } = {},
+  // The hosted schema is several columns behind; one 400 per missing column, so leave room to
+  // clear all of them rather than giving up part-way and losing the answer.
+  { select = true, maxDrops = 8 }: { select?: boolean; maxDrops?: number } = {},
 ): Promise<MessageInsertOutcome<T>> {
   const payload: Record<string, unknown> = { ...row };
   const dropped: string[] = [];
@@ -83,6 +99,56 @@ export async function insertRowTolerant<T>(
   }
 
   return { data: null, error: { message: `could not save the row: ${dropped.join(', ')} rejected` }, dropped };
+}
+
+export interface RowUpdateOutcome {
+  error: { message?: string } | null;
+  /** columns the server does not have, dropped so the rest of the patch could be written */
+  dropped: string[];
+}
+
+/**
+ * Update one row, retrying without any column the server reports as missing.
+ *
+ * The same schema gap that made inserts tolerant applies to a late write: the hosted project can be
+ * a migration behind, and an update that names a column it does not have is a 400 that writes
+ * nothing. The caller is told, because an edit the database refused must not stay on screen as
+ * though it had been saved. A patch whose columns were all dropped is not sent at all — an empty
+ * update answers 204 and would claim a success that never happened.
+ */
+export async function updateRowTolerant(
+  client: SupabaseClient,
+  table: string,
+  match: Record<string, string | number>,
+  patch: Record<string, unknown>,
+  { maxDrops = 8 }: { maxDrops?: number } = {},
+): Promise<RowUpdateOutcome> {
+  const payload: Record<string, unknown> = { ...patch };
+  const dropped: string[] = [];
+
+  for (const column of Object.keys(payload)) {
+    const learntAt = learnt.get(keyFor(table, column));
+    if (learntAt && Date.now() - learntAt < RELEARN_AFTER_MS) {
+      delete payload[column];
+      dropped.push(column);
+    }
+  }
+
+  for (let attempt = 0; attempt <= maxDrops; attempt += 1) {
+    if (Object.keys(payload).length === 0) {
+      return { error: { message: `nothing to write: ${dropped.join(', ')} is not in the database yet` }, dropped };
+    }
+    const { error } = await client.from(table).update(payload).match(match);
+    if (!error) return { error: null, dropped };
+
+    const missing = missingColumnFrom(error, table);
+    if (!missing || !(missing in payload)) return { error, dropped };
+    delete payload[missing];
+    dropped.push(missing);
+    learnt.set(keyFor(table, missing), Date.now());
+  }
+
+  return { error: { message: `could not update the row: ${dropped.join(', ')} rejected` }, dropped };
 }
 
 const noted = new Set<string>();

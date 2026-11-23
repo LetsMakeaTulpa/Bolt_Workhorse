@@ -5,6 +5,9 @@
 -- only tell by comparing the prose. The new turn now records the message it replaces, so the
 -- transcript can say "retry of the earlier attempt" and the replaced turn can point forward to it.
 --
+-- The value is the replaced message's own row id: messages are inserted under the id the transcript
+-- renders, so the link names an existing row and its anchor still resolves after a reload.
+--
 -- Nullable, and `on delete set null`: a link that outlives its target would point at nothing.
 
 alter table public.messages

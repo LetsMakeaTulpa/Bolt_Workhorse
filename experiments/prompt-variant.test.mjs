@@ -29,7 +29,15 @@ const {
   savePromptVariant,
   systemPromptFor,
 } = await import(`${pathToFileURL(OUT).href}?t=${Date.now()}`);
-const { FIELDWORK_SYSTEM_PROMPT } = await import(`${pathToFileURL(`${process.cwd()}/node_modules/.cache/fieldwork/system-prompt.mjs`).href}`);
+// this suite used to import the system-prompt bundle the *other* suite happened to leave in the
+// cache, so a clean cache failed here and nowhere else. It builds the module it compares against.
+const PROMPT_OUT = (process.env.SYSTEM_PROMPT_MODULE ?? tmpPath('system-prompt.mjs')).replaceAll('\\', '/');
+execFileSync(
+  process.execPath,
+  [ESBUILD, 'src/lib/systemPrompt.ts', '--bundle', '--format=esm', `--outfile=${PROMPT_OUT}`, '--log-level=error'],
+  { stdio: 'inherit' },
+);
+const { FIELDWORK_SYSTEM_PROMPT } = await import(`${pathToFileURL(PROMPT_OUT).href}?t=${Date.now()}`);
 
 const memoryStorage = () => {
   const map = new Map();

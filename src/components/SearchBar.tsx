@@ -54,7 +54,12 @@ export const SEARCH_ENGINES = ENGINE_CATALOG.map((engine) => ({
 }));
 
 interface SearchBarProps {
-  onSearch: (query: string) => void;
+  /**
+   * The question, and the attachments' text as a second argument rather than glued onto it: the
+   * message carries the files, the search must not. An engine asked the whole file is a URL that
+   * 414s and a query nobody typed.
+   */
+  onSearch: (query: string, attachments?: string) => void;
   onRunLane?: (lane: string, target: string) => void;
   engines: string[];
   onEnginesChange: (engines: string[]) => void;
@@ -174,7 +179,7 @@ export function SearchBar({
     const asked = query.trim();
     if (!asked || disabled) return;
     const attached = attachments.map((file) => `--- ${file.name} ---\n${file.text}`).join('\n\n');
-    onSearch(attached ? `${asked}\n\n${attached}` : asked);
+    onSearch(asked, attached || undefined);
     // a sent message leaves the box: the next turn starts with nothing in it
     setQuery('');
     setAttachments([]);

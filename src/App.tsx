@@ -364,7 +364,13 @@ export default function App() {
 
   const handleSendMessage = async (
     content: string,
-    options?: { forceSearch?: boolean; reused?: Source[] | null; retryOf?: string },
+    options?: {
+      forceSearch?: boolean;
+      reused?: Source[] | null;
+      retryOf?: string;
+      /** what the engines are asked, when the message itself carries more than the question */
+      searchQuery?: string;
+    },
   ) => {
     if (!content.trim() || isStreaming) return;
     // a notice belongs to the answer it describes, not to the next question
@@ -449,7 +455,7 @@ export default function App() {
         'completed',
       );
     } else if (shouldSearch) {
-      searchResultsData = await performSearch(content, conv.id);
+      searchResultsData = await performSearch(options?.searchQuery ?? content, conv.id);
       compiledQueries = lastQueries();
       // A stopped or replaced search used to end the turn right here, with nothing under the
       // question: that reads as the app not answering at all, and it is what left people asking
@@ -1003,14 +1009,21 @@ export default function App() {
    * because the text was typed into a box. "Sources only" is the one mode where a search is the
    * request itself, and it says so on the button.
    */
-  const handleComposerSend = async (query: string) => {
+  const handleComposerSend = async (query: string, attachments?: string) => {
     // a running search does not block a new one: performSearch cancels it, so the newest query wins
-    if (!query.trim() || isStreaming) return;
+    const asked = query.trim();
+    if (!asked || isStreaming) return;
     if (rawSearchOnly) {
-      await handleRawSearch(query);
+      await handleRawSearch(asked);
       return;
     }
-    await handleSendMessage(query.trim());
+    // The files ride in the message so the model can read them, and stay out of the search: an
+    // engine is asked the question, not the whole document, which no engine can answer and every
+    // engine would receive.
+    await handleSendMessage(
+      attachments ? `${asked}\n\n${attachments}` : asked,
+      attachments ? { searchQuery: asked } : undefined,
+    );
   };
 
   const handleSignOut = async () => {

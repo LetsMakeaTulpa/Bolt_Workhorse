@@ -22,7 +22,8 @@ interface ChatAreaProps {
   isSearching: boolean;
   messagesEndRef: React.RefObject<HTMLDivElement>;
   presetName: string;
-  onSearch: (query: string) => void;
+  /** the question, plus the attachments' text when the composer carries files */
+  onSearch: (query: string, attachments?: string) => void;
   onRunLane?: (lane: string, target: string) => void;
   /** a dork pressed in an answer, on its way into the composer */
   onUseDork?: (query: string) => void;

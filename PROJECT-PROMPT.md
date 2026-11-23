@@ -336,6 +336,8 @@ Sources are handed to the model in rank order: every fused source, with each pag
   with its own preview of the text that will be sent; the text is read in the browser, long files are
   truncated with the cut marked, and the attachment rides into the turn as labelled blocks ahead of
   the question. Nothing is uploaded on attach, so a file only leaves the browser as part of a turn.
+  The files go into the **message**, never into the **search**: the engines are asked the question,
+  and a file is context the answer reads, not a query string to hand a crawler.
 - **Transcript** — answer-first prose; citations as markers that toggle a highlight — pressing a
   marker or its source row lights up every sentence citing that id, both directions from the mapping
   the grounding pass already builds, with nothing new stored for it; the claim ledger as a table; a grounding
